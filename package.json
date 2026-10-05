@@ -1,0 +1,65 @@
+{
+  "name": "plasma",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "package:local": "npm run build && node scripts/package-local.ts",
+    "setup:plugin": "node scripts/prepare-local-plugin.ts",
+    "start": "node server/http.ts",
+    "mcp": "node server/mcp.ts",
+    "typecheck": "tsc -b",
+    "test": "node --test \"tests/*.test.ts\"",
+    "postinstall": "node scripts/prepare-terminal.ts",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "check": "biome check . && npm run check:design",
+    "check:fix": "biome check --write .",
+    "check:design": "node scripts/check-design.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openai/mcp-extensions": "0.1.0",
+    "@radix-ui/react-select": "^2.3.7",
+    "@radix-ui/react-switch": "^1.3.7",
+    "@radix-ui/react-tabs": "^1.1.21",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "@shikijs/core": "^4.5.0",
+    "@shikijs/engine-javascript": "^4.5.0",
+    "@shikijs/langs": "^4.5.0",
+    "@shikijs/monaco": "^4.5.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.51.0",
+    "monaco-editor": "0.57.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.7.0",
+    "typescript": "5.9.3",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/hast": "^3.0.5",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
+    "vite": "^7.0.0",
+    "vite-plugin-singlefile": "^2.3.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  },
+  "engines": {
+    "node": ">=24.3.0"
+  }
+}

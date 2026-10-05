@@ -1,0 +1,19 @@
+@layer theme, base, components, utilities;
+/* preflight は読み込まない。Monaco と xterm が自分のスタイルを保つため。 */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./base.css" layer(base);
+@import "./tokens.css";
+@source "../";
+
+/* MCP のホストでは Monaco 同梱のアイコンフォントが読み込まれないことがある。差分の印は
+   同じ意味の文字で表し、そのフォントに依存せずに読めるようにする。
+   Monaco の層に入っていないアイコンの規則より優先させるため、この規則も層に入れない。 */
+.monaco-editor .insert-sign.codicon::before {
+  content: "+";
+  font-family: var(--font-mono);
+}
+.monaco-editor .delete-sign.codicon::before {
+  content: "−";
+  font-family: var(--font-mono);
+}

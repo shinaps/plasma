@@ -1,0 +1,59 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input {
+  font: inherit;
+}
+button {
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+button:hover {
+  background: var(--color-accent);
+  color: var(--color-foreground);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button:focus-visible,
+input:focus-visible,
+[role="separator"]:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
+}
+[hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: HTML hidden must override library display rules. */
+  display: none !important;
+}
+#app {
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Monaco はメニューを自分の要素の外に描くので、メニューの色はルートの変数で指定する。 */
+:root {
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  --vscode-menu-background: var(--color-background);
+  --vscode-menu-foreground: var(--color-foreground);
+  --vscode-menu-border: var(--color-border);
+  --vscode-menu-separatorBackground: var(--color-border);
+  --vscode-list-hoverBackground: var(--color-accent);
+  --vscode-list-hoverForeground: var(--color-accent-foreground);
+  --vscode-widget-shadow: var(--color-shadow);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: var(--ui-font-size);
+}
+body.docking {
+  cursor: grabbing;
+  user-select: none;
+}

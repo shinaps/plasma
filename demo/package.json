@@ -1,0 +1,1 @@
+{"name":"workbench-demo","type":"module","private":true,"scripts":{"test":"node --test src/pricing.test.ts"}}

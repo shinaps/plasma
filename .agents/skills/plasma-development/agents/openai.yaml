@@ -1,0 +1,6 @@
+interface:
+  display_name: "Plasma Development"
+  short_description: "Plasmaの改善をゴール設定から検証・ローカルプラグイン更新まで完了"
+  default_prompt: "$plasma-development を使って、Plasmaの改善をゴール設定から実装・検証・ローカルプラグイン反映まで進めてください。"
+policy:
+  allow_implicit_invocation: true

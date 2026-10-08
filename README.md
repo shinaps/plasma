@@ -4,14 +4,14 @@ Codexの会話の横で使う、TypeScript向けの小さな開発画面です�
 
 ## 別のPCにインストール
 
-macOS、Node.js 24.3以降、Git、CodexデスクトップとCodex CLIが必要です。Linux・Windowsは未検証です。
+macOS、Node.js 24.3以降、pnpm 11.19.0、Git、CodexデスクトップとCodex CLIが必要です。Linux・Windowsは未検証です。
 
 ```sh
 git clone https://github.com/shinaps/plasma.git
 cd plasma
-npm ci
-npm run build
-npm run setup:plugin
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm run setup:plugin
 codex plugin marketplace add "$PWD/.shinaps/work/local-marketplace"
 codex plugin add typescript-workbench@workbench-local
 ```
@@ -24,9 +24,9 @@ Codexを再起動してPlasmaを開き、使いたいプロジェクトを選択
 
 ```sh
 git pull --ff-only
-npm ci
-npm run build
-npm run setup:plugin
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm run setup:plugin
 ```
 
 ## 起動
@@ -34,16 +34,12 @@ npm run setup:plugin
 Node.js 24以降で、プロジェクトルートから実行します。
 
 ```sh
-npm ci
-npm run build
-npm start
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm start
 ```
 
-表示された `http://127.0.0.1:…/#…` をCodexの内蔵ブラウザで開きます。最初にプロジェクト選択画面を表示します。起動時にプロジェクトを最近の一覧へ登録する場合はルートを指定します。
-
-```sh
-npm start -- /absolute/path/to/project
-```
+表示された `http://127.0.0.1:…/#…` をCodexの内蔵ブラウザで開きます。起動時の引数は受け付けません。
 
 起動するとプロジェクト選択画面が開きます。フォルダのパスを入力するか、フォルダ一覧・最近開いたプロジェクトから選択してください。プロジェクトは画面ごとに選択し、ファイル操作とターミナルはプロジェクト別に分離します。最近の一覧は ~/.config/typescript-workbench/projects.json に保存します。終了は起動したターミナルでCtrl+C。再起動すると接続URLが変わります。外部サービスやモデルAPIへの通信はありません。
 
@@ -51,11 +47,14 @@ npm start -- /absolute/path/to/project
 
 - ルート全体の階層ツリー（空フォルダを含む）、検索、閉じられるタブでの編集。Markdown・設定ファイルも表示
 - Projectツリーは単クリック・Enterで開く。矢印キー、全折りたたみ、現在ファイルの表示、幅調整
-- 種類別アイコンとGit状態によるファイル・フォルダ名の色分け
+- Projectツリーの右クリックからファイル・フォルダの作成、改名、Cut/Copy/Paste、永久削除。名前の衝突では上書きせず、未保存の対象は保存してから操作。Copy Pathは絶対・プロジェクト相対・ファイル名を選択可能
+- Reload from Disk、Git → Show Diff、Mark Directory As → Excluded / Include in Analysis
+- 種類別アイコンとGit状態によるファイル・フォルダ名の色分け。Gitでignoreされている項目はグレー、解析除外は紫（両方なら紫を優先）。ツールチップに両方の状態を表示
 - Git変更一覧はChanges／Unversioned Filesに分けた階層ツリー。単一の子フォルダはパスをまとめ、フォルダごとの件数と折りたたみに対応
-- Git変更一覧と左右比較（HEAD→ディスク）。差分の前後移動、左右同時の折り返しトグル（Markdownは初期ON、明示した選択は画面を開いている間保持）。Git操作は読み取り専用
+- Git変更一覧と左右比較（HEAD→ディスク）。差分の前後移動、左右同時の折り返しトグル（Markdownは初期ON、明示した選択は画面を開いている間保持）
+- チェックしたファイルのコミットと、差分単位を選ぶ部分コミット。部分コミットは一時 index で選んだ行だけを格納し、作業ツリーと未選択のステージ内容を保つ。改行コードだけの変更は差分に現れないので部分コミットに含まれず、ファイル全体のコミットで含める。マージ・cherry-pick・revert の途中はどちらのコミットも拒否する。ブランチの切り替え（上書きになる変更があれば Git が拒否）、`gh` によるプルリクエストの閲覧（読み取り専用）
 - 下部の「Git History」では複数のブランチ・タグをチェックして同じグラフに表示。「Compare with」で比較元を選び、未反映のコミットを「Branch only」、比較元の先端を「Base tip」で区別する。初期表示は HEAD と既定ブランチで、選択はプロジェクトごとに保存。「Reset」で初期表示に戻る。リモートはローカルに取得済みの情報を使用し、自動 fetch は行わない。件数は検索・フォルダの絞り込みによらずリポジトリ全体の比較。メッセージ検索、変更ファイルと過去の差分を表示でき、パネルの高さは上端をドラッグして変更可能。マージは第1親と比較し、過去のコードの行参照は自動共有しない
-- 「Go to Definition」/ F12、「Find References」、「Back」でジャンプ履歴を戻る
+- 「Go to Definition」/ F12、「Peek Definition」/ ⌥F12（Peek 内で編集するとそのファイルがタブとして開く）、「Find References」、「Back」でジャンプ履歴を戻る
 - 型ホバーと「Show Type」。プロジェクト内のシンボルが対象
 - 未保存のバッファを含む型診断と、診断から該当行へのジャンプ。Problems パネルはタブ列右の件数ボタンか ⇧⌘M で開閉
 - 保存（全オープンファイル）/ Cmd+S。設定 → On Save の Format on Save を有効にすると、TypeScript・JavaScript はプロジェクトにある整形器（Vite+・Biome・Oxfmt）で整形してから保存
@@ -70,12 +69,10 @@ npm start -- /absolute/path/to/project
 同じUIと解析処理を使うstdio MCPサーバーを `server/mcp.ts` に実装しています。
 
 ```sh
-npm run mcp
-# 別のプロジェクトを対象にする場合
-npm run mcp -- /absolute/path/to/project
+pnpm run mcp
 ```
 
-MCPクライアントに設定する実行コマンドは `node`、引数は `server/mcp.ts` の絶対パスと任意の対象プロジェクトです。Node 24 はサーバーの `.ts` を型を取り除いてそのまま実行しますが、UIには事前の `npm run build` が必要です。プラグイン設定の生成時に実行中のNodeの絶対パスを登録します。
+MCPクライアントに設定する実行コマンドは `node`、引数は `server/mcp.ts` の絶対パスです。対象プロジェクトは画面で選びます。Node 24 はサーバーの `.ts` を型を取り除いてそのまま実行しますが、UIには事前の `pnpm run build` が必要です。プラグイン設定の生成時に実行中のNodeの絶対パスを登録します。
 
 - `open_workbench` は会話パネルとグローバルのentrypointを宣言
 - `ui://plasma/editor` は単一HTMLのMCP App
@@ -87,29 +84,30 @@ MCPクライアントに設定する実行コマンドは `node`、引数は `se
 
 ## 境界
 
-- WebStorm全機能の代替ではありません。補完、リネームリファクタリング、デバッガ、Gitのステージ・コミット操作、ファイル新規作成は未実装
-- 解析は同梱TypeScript 5.9.3。プロジェクト固有のTypeScriptバージョン、Project References、Vue/Svelteは未対応
-- 開いたソースに最も近い `tsconfig.json` を利用。診断の範囲もそのプロジェクト単位。`tsconfig.json` が無い場合は、ルート以下のソース全体を既定の設定で解析する
-- `node_modules`・`.git`・`dist`・`build`・`.build`・`DerivedData`・`.next`・`.turbo`・`.cache`・`.shinaps` はツリーから除外。シンボリックリンクは列挙しない
+- WebStorm全機能の代替ではありません。補完、リネームリファクタリング、デバッガ、ステージ操作（index の編集）、push・pull・マージは未実装
+- 解析は同梱TypeScript 5.9.3。プロジェクト固有のTypeScriptバージョン、Vue/Svelteは未対応
+- 開いたソースに最も近い `tsconfig.json` を利用。診断の範囲もそのプロジェクト単位。`references` だけの設定（Vite の solution 形式）では、そのファイルを含む参照先の設定で解析する。`tsconfig.json` が無い場合は、ルート以下のソース全体を既定の設定で解析する
+- `.git` の中身はテキストとして表示・編集できるが、作成・改名・移動・削除はツリーから行えない。自動の `git status` は、開いたリポジトリの `.git/config` にある `core.fsmonitor` と `filter` のコマンドを実行しない（グローバル設定の filter は使う）
+- `node_modules`・`.git`・`dist`・`build`・`.build`・`DerivedData`・`.next`・`.turbo`・`.cache`・`.shinaps` は初期設定でツリーから除外。Settings → Files の Hidden Files and Folders でプロジェクトごとに変更でき、保存するとツリーとファイル検索へ反映する。1行に1つ、任意の階層のフォルダ名またはファイル・フォルダのプロジェクト相対パスを指定する（ワイルドカード非対応）。`./` 付きのパスはその場所だけに一致する。ツリーの右クリック → Exclude from Analysis は選んだファイル・フォルダを表示・編集できるまま解析から除外する。Excluded from Analysis の一覧で管理し、診断・ホバー・定義・参照検索の対象から外す。ほかのファイルの型解決に必要なimport先は読み込む場合がある。解除は設定の一覧から対象行を削除して保存する。空欄なら除外なし。表示の除外と解析の除外は独立し、Git・フォーマッターの設定は変更しない。シンボリックリンクは列挙しない
 - 表示・編集は2 MB以下のUTF-8テキスト。バイナリは一覧のみ
 - 型診断は未保存の編集内容も含めて実行
 - Git差分の右側はエディタと同じ編集中の本文（未保存の編集を含む）。左側（HEAD／index）は5秒ごとの一覧更新で再取得。ファイル一覧の追加・削除はサイドバーの更新ボタンで反映。競合の3-wayマージとバイナリ差分は未対応
 - 1セッション用。複数タブ・複数ユーザー間で編集状態は分離しない
-- 保存時に、読み込んだ後でディスク上のファイルが変わっていないかを確かめる。ファイルのロックはしない
+- 保存時に、読み込んだ後でディスク上のファイルが変わっていないかを確かめる。ファイルのロックはしない。保存は同じフォルダの一時ファイルに書き切ってから置き換える（ハードリンクされたファイルと一時ファイルを作れないフォルダでは上書き）
 - 起動したルート外への編集とシンボリックリンクによる脱出を拒否。解析エンジンは型解決のため依存パッケージを読む
 - HTTP版は 127.0.0.1 だけで待ち受け、起動ごとのトークンとOrigin/Host照合で保護
 
 ## 開発と検証
 
 ```sh
-npm run typecheck
-npm run build
-npm test
+pnpm run typecheck
+pnpm run build
+pnpm test
 ```
 
-サーバー・共有コード・スクリプト・テストも TypeScript で書き、Node 24 の型消去でそのまま実行します (`enum` や parameter properties は使えないため、`erasableSyntaxOnly` で検査します)。相対 import は `.ts` の拡張子まで書きます。`npm run typecheck` は `tsc -b` で、ブラウザ側 (`tsconfig.app.json`) と Node 側 (`tsconfig.node.json`) を別々に検査します。
+サーバー・共有コード・スクリプト・テストも TypeScript で書き、Node 24 の型消去でそのまま実行します (`enum` や parameter properties は使えないため、`erasableSyntaxOnly` で検査します)。相対 import は `.ts` の拡張子まで書きます。`pnpm run typecheck` は `tsc -b` で、ブラウザ側 (`tsconfig.app.json`) と Node 側 (`tsconfig.node.json`) を別々に検査します。
 
-`shared/protocol.ts` がクライアントとサーバーの契約です。操作ごとの入力は zod の schema で、応答は型で表し、`Projects.dispatch` の入口で 1 回だけ検証します。`server/workspace.ts` が解析・ファイル操作、`server/http.ts` と `server/mcp.ts` が接続口、`src/main.ts` が起動口、`src/app/` が画面全体の組み立てです。`src/features/explorer/` がツリー操作、`src/features/git/` が差分表示、`server/git.ts` が読み取り専用のGitアクセスを担当します。
+`shared/protocol.ts` がクライアントとサーバーの契約です。操作ごとの入力は zod の schema で、応答は型で表し、`Projects.dispatch` の入口で 1 回だけ検証します。`server/workspace.ts` が解析・ファイル操作、`server/http.ts` と `server/mcp.ts` が接続口、`src/main.ts` が起動口、`src/app/` が画面全体の組み立てです。`src/features/explorer/` がツリー操作、`src/features/git/` が差分表示とコミット、`server/git.ts` と `server/partial-commit.ts` が Git アクセスを担当します。
 
 画面の文言と通知は英語、コードのコメントとこの文書は日本語で書きます。
 
@@ -117,9 +115,9 @@ npm test
 
 ## 注釈とローカルプラグイン
 
-他の端末向けのローカル配布候補は `npm run package:local` で生成する。出力は `.shinaps/work/distribution/` 以下で、ビルド済みUI・サーバー・lockfile・第三者ライセンスを含む。展開先で依存関係を導入して設定を生成するため、開発者の絶対パスは配布しない。これは公式掲載済みパッケージではない。導入方法は [配布候補のREADME](docs/local-distribution.md) を参照。
+他の端末向けのローカル配布候補は `pnpm run package:local` で生成する。出力は `.shinaps/work/distribution/` 以下で、ビルド済みUI・サーバー・lockfile・第三者ライセンスを含む。展開先で依存関係を導入して設定を生成するため、開発者の絶対パスは配布しない。これは公式掲載済みパッケージではない。導入方法は [配布候補のREADME](docs/local-distribution.md) を参照。
 
-ファイルはワンクリックで開く。コード選択は自動共有し、右クリックの「Add Comment」で注釈入力・行の参照のコピーができる。プラグインホストが対応する場合だけ「Send」(会話へ送信) が有効になる。注釈の対象は入力開始時に固定され、差分では右側（作業中のコード）だけを共有対象にする。入力内容はメモリ内のみ。
+ファイルはワンクリックで開く。コード選択は自動共有し、右クリックの「Add Comment」で注釈入力・行の参照のコピーができる。プラグインホストが対応する場合だけ「Send」(会話へ送信) が有効になる。注釈の対象は入力開始時に固定され、差分では右側（作業中のコード）だけを共有対象にする。入力欄の外をクリックすると欄は隠れるが書きかけは残り、同じ対象で再び「Add Comment」を選ぶと戻る。Escape で破棄する。入力内容はメモリ内のみ。
 
 プラグインでは現在のファイルパスと選択行範囲を Model-App Context へ共有する。コード本文・内容ハッシュ・変更検知は使用しない。選択範囲は会話の入力欄へ添付する。音声通話用の選択取得ツールや定期更新は持たない。
 
@@ -178,15 +176,15 @@ src/
 ```
 
 Reactコンポーネントのスタイルは `className` のTailwindクラスで指定します。
-色・文字サイズ・角丸・影は `src/styles/tokens.css` に集約し、コンポーネントから意味のあるTailwindクラスで参照します。Monaco・xtermも同じトークンを読み取ります。構文配色と配布アイコンは配布元のテーマを保持します。動的な幅・位置・インデントはレイアウト値として指定します。DOM操作のためのクラスはスタイル定義には使いません。`npm run check:design` でトークン外の色や文字サイズなどを検査します。
+色・文字サイズ・角丸・影は `src/styles/tokens.css` に集約し、コンポーネントから意味のあるTailwindクラスで参照します。Monaco・xtermも同じトークンを読み取ります。構文配色と配布アイコンは配布元のテーマを保持します。動的な幅・位置・インデントはレイアウト値として指定します。DOM操作のためのクラスはスタイル定義には使いません。`pnpm run check:design` でトークン外の色や文字サイズなどを検査します。
 
 `biome.json` がこのプロジェクトの整形・静的チェック設定です。
 
-- `npm run format`: コードを整形
-- `npm run lint`: 静的チェック
-- `npm run check`: 整形・静的チェック・import順を検証
-- `npm run check:fix`: 安全な自動修正
-- `npm run typecheck` / `npm test` / `npm run build`: 型・振る舞い・ビルドの検証
+- `pnpm run format`: コードを整形
+- `pnpm run lint`: 静的チェック
+- `pnpm run check`: 整形・静的チェック・import順を検証
+- `pnpm run check:fix`: 安全な自動修正
+- `pnpm run typecheck` / `pnpm test` / `pnpm run build`: 型・振る舞い・ビルドの検証
 
 配布元のアイコン素材、ビルド出力、検証用プロジェクトはBiomeの対象に含めません。
 

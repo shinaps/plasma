@@ -4,6 +4,3 @@ dist/
 .DS_Store
 .env
 .env.*
-# 個別のサポート相談と作業環境の検証記録は配布コードに含めない。
-/docs/openai-local-mcp-inquiry.md
-/docs/distribution-verification.md

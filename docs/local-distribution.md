@@ -40,3 +40,9 @@ Remove Plasma and its marketplace in Codex, close running Plasma panels, then de
 Third-party license notices are included in `third-party/`. A public license and publisher/legal details for Plasma itself have not yet been selected. This artifact is prepared for owner evaluation and discussion of local MCP distribution; it does not grant an open-source license or indicate approval for public directory publication.
 
 The current public submission route expects an HTTPS MCP endpoint. Local MCP support requires discussion with OpenAI: https://developers.openai.com/plugins/guides/submit-claude-plugin
+
+## Pull request review
+
+In Git → Pull Requests, select an open GitHub PR to browse its changed files. GitHub CLI (`gh`) must be installed and signed in (`gh auth login`). The project must belong to a Git repository with complete history.
+
+Plasma fetches the PR's base and head objects and compares the merge base to the pinned head commit. It does not check out a branch or change the index or working files. PR views are read-only; shared references include the PR URL and commit IDs. Use Refresh Pull Requests and select the PR again to retrieve its latest state. Text and image rendering follow the existing diff viewer's supported formats. Review comments and approvals are not submitted from this view.

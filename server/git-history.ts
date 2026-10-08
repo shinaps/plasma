@@ -51,10 +51,18 @@ export function gitHistory(
     'refs/heads/main',
     'refs/heads/master',
   ].find((ref) => ref && refs.includes(ref));
-  const baseRef = options.compareRef || defaultBase;
-  const selection = options.revisions.length
-    ? options.revisions
-    : ['HEAD', ...(baseRef ? [baseRef] : [])];
+  // 保存された選択に消えたブランチがあっても履歴を止めない。存在する参照とページ送りの commit id だけを使い、
+  // 外した参照は missing で知らせる。参照一覧に無い文字列は git に渡さないので、オプションとしても解釈されない。
+  const known = (ref: string): boolean =>
+    ref === 'HEAD' || refs.includes(ref) || /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(ref);
+  const missing = [
+    ...options.revisions,
+    ...(options.compareRef ? [options.compareRef] : []),
+  ].filter((ref) => !known(ref));
+  const baseRef =
+    options.compareRef && known(options.compareRef) ? options.compareRef : defaultBase;
+  const requested = options.revisions.filter(known);
+  const selection = requested.length ? requested : ['HEAD', ...(baseRef ? [baseRef] : [])];
   const tips: string[] = [];
   for (const ref of selection) {
     try {
@@ -64,7 +72,7 @@ export function gitHistory(
       if (ref !== 'HEAD') throw error;
     }
   }
-  if (!tips.length) return { refs, selection, tips, commits: [], hasMore: false };
+  if (!tips.length) return { refs, selection, missing, tips, commits: [], hasMore: false };
   const baseTip = baseRef ? resolveCommit(root, options.compareTip || baseRef) : undefined;
   // 日付や描画位置ではなく到達可能性で分類する。マージ済みのコミットを「追加分」と誤認しないため。
   const outside = baseTip
@@ -113,6 +121,7 @@ export function gitHistory(
   return {
     refs,
     selection,
+    missing,
     tips,
     comparison:
       baseRef && baseTip && outside
@@ -187,17 +196,18 @@ export function gitCommitDiff(root: string, ref: string, relative: string): Diff
     }
     return decodeGitContent(bytes, relative);
   };
+  // 比較元は第 1 親の内容。ルートコミットと追加されたファイルには比較元がない。
+  const parent = entry.index === 'A' ? undefined : commit.parent;
   return {
     path: relative,
     image: !!imageType(relative),
     editable: false,
     inWorkingTree: !!fs.statSync(path.join(root, relative), { throwIfNoEntry: false })?.isFile(),
-    original:
-      !commit.parent || entry.index === 'A'
-        ? ''
-        : blob(commit.parent, entry.oldPath ?? entry.repoPath),
+    originalExists: parent !== undefined,
+    original: parent === undefined ? '' : blob(parent, entry.oldPath ?? entry.repoPath),
     modified: entry.index === 'D' ? '' : blob(commit.id, entry.repoPath),
     originalLabel: commit.parent?.slice(0, 8) ?? '(empty)',
+    originalPath: entry.oldPath ?? entry.repoPath,
     modifiedLabel: commit.id.slice(0, 8),
   };
 }

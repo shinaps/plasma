@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  defaultAnalysisExcludedPaths,
+  defaultExcludedPaths,
+  isExcludedPath,
+} from '../shared/explorer-settings.ts';
 import { isSource } from '../shared/language.ts';
 import { limits, megabytes } from '../shared/limits.ts';
 import type {
@@ -28,6 +33,8 @@ type Project = {
   /** tsconfig の include から決まる一覧。呼び出しごとに変えない。 */
   files: readonly string[];
   scope: string;
+  /** references に書かれた、プロジェクト内にある設定ファイルの絶対パス。 */
+  references: readonly string[];
   /** include の外にあるファイルを開いたとき、そのファイルだけを一時的に加える。 */
   extra?: string;
 };
@@ -45,46 +52,96 @@ const scriptFiles = (project: Project): string[] =>
   project.extra ? [...project.files, project.extra] : [...project.files];
 // TS18003 "No inputs were found in config file" は公開 API に定数がないので番号で持つ。
 const noInputsFoundCode = 18003;
-// 依存や生成物のツリーはソースの構造を隠し、数百万ファイルを含むことがある。
-const excludedDirectories = [
-  'node_modules',
-  '.git',
-  'dist',
-  'build',
-  '.build',
-  'DerivedData',
-  '.next',
-  '.turbo',
-  '.cache',
-  '.shinaps',
-];
-
 /** 1 つのプロジェクトのファイル操作と TypeScript の解析。要求で受け取った相対パスの境界検査はすべて resolve を通る。 */
 export class Workspace {
   readonly root: string;
   private readonly overlays = new Map<string, Overlay>();
   private overlayVersion = 0;
+  private watcher?: fs.FSWatcher;
+  private diskRevision = 0;
   private readonly projects = new Map<string, Project>();
   private files: string[] = [];
   private directories: string[] = [];
   private unreadableDirectories: string[] = [];
-  constructor(root: string) {
+  private excludedPaths: string[];
+  private analysisExcludedPaths: string[];
+  /** 言語サービスを作った時点の diskRevision。進んでいなければ再走査でも作り直さない。 */
+  private projectsRevision = -1;
+  constructor(
+    root: string,
+    excludedPaths = defaultExcludedPaths,
+    analysisExcludedPaths = defaultAnalysisExcludedPaths,
+  ) {
+    this.analysisExcludedPaths = analysisExcludedPaths;
+    this.excludedPaths = excludedPaths;
     this.root = fs.realpathSync.native(root);
-    this.rescan();
+    this.rescan(this.excludedPaths, this.analysisExcludedPaths, []);
+    try {
+      this.watcher = fs.watch(this.root, { recursive: true, persistent: false }, (_event, file) => {
+        const relative = file?.replaceAll(path.sep, '/');
+        // Git の内部オブジェクトや非表示の生成物では、ツリー全体を再走査しない。
+        // ただし HEAD・index・refs は外部のコミットやブランチ切り替えで差分の比較元が変わるため、
+        // 版を進めて差分表示と Git の状態を更新させる。
+        const gitReference =
+          relative === '.git/HEAD' ||
+          relative === '.git/index' ||
+          relative === '.git/packed-refs' ||
+          relative?.startsWith('.git/refs/');
+        const gitInternal = !gitReference && (relative === '.git' || relative?.startsWith('.git/'));
+        if (
+          !relative ||
+          gitReference ||
+          (!gitInternal && !isExcludedPath(relative, true, this.excludedPaths))
+        )
+          this.diskRevision++;
+      });
+      this.watcher.on('error', () => {
+        this.watcher?.close();
+        this.watcher = undefined;
+      });
+    } catch {
+      // 監視非対応のファイルシステムでも、版の問い合わせごとの再走査で自動反映を続ける。
+    }
+  }
+
+  get revision(): number {
+    return this.watcher ? this.diskRevision : ++this.diskRevision;
   }
 
   dispose(): void {
-    for (const project of this.projects.values()) project.language.dispose();
-    this.projects.clear();
+    this.watcher?.close();
+    this.watcher = undefined;
+    this.clearProjects();
   }
 
-  /** ファイルツリーを走査し直し、言語サービスも作り直す。設定ファイルの変更をここで取り込む。 */
-  rescan(): WorkspaceInfo {
-    this.dispose();
+  private clearProjects(): void {
+    for (const project of this.projects.values()) project.language.dispose();
+    this.projects.clear();
+    this.projectsRevision = this.diskRevision;
+  }
+
+  /**
+   * ファイルツリーを走査し直す。言語サービスは、ディスクが変わった (ファイルの追加・削除や tsconfig の変更) か
+   * 解析の除外設定が変わったときだけ作り直す。フォルダの展開やポーリングのたびにプログラム全体を作り直さない。
+   */
+  rescan(
+    excludedPaths = this.excludedPaths,
+    analysisExcludedPaths = this.analysisExcludedPaths,
+    // 通常は展開済みの枝だけを読む。検索・全展開の明示操作だけ recursive の配下を走査する。
+    expanded?: string[],
+    recursive?: string,
+  ): WorkspaceInfo {
+    const analysisChanged =
+      analysisExcludedPaths.length !== this.analysisExcludedPaths.length ||
+      analysisExcludedPaths.some((entry, i) => entry !== this.analysisExcludedPaths[i]);
+    this.analysisExcludedPaths = analysisExcludedPaths;
+    this.excludedPaths = excludedPaths;
+    if (analysisChanged || this.projectsRevision !== this.diskRevision) this.clearProjects();
     this.files = [];
     this.directories = [];
     this.unreadableDirectories = [];
-    const visit = (directory: string): void => {
+    const symlinks: Record<string, string> = Object.create(null);
+    const visit = (directory: string, ancestors: Set<string>): void => {
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -96,21 +153,53 @@ export class Workspace {
       }
       for (const entry of entries) {
         const file = path.join(directory, entry.name);
-        if (entry.isDirectory() && !excludedDirectories.includes(entry.name)) {
-          this.directories.push(this.relative(file));
-          visit(file);
-        } else if (entry.isFile()) this.files.push(file);
+        const relative = this.relative(file);
+        if (isExcludedPath(relative, entry.isDirectory(), this.excludedPaths)) continue;
+        let directoryEntry = entry.isDirectory();
+        if (entry.isSymbolicLink()) {
+          symlinks[relative] = fs.readlinkSync(file);
+          try {
+            const real = fs.realpathSync.native(file);
+            directoryEntry =
+              insideRoot(this.root, real) &&
+              !ancestors.has(real) &&
+              fs.statSync(real).isDirectory();
+          } catch {
+            // 壊れたリンクも一覧に残す。開く際は通常のファイル境界検証で理由を返す。
+          }
+        }
+        if (directoryEntry) {
+          this.directories.push(relative);
+          if (
+            expanded === undefined ||
+            (recursive !== undefined &&
+              (!recursive ||
+                relative === recursive ||
+                relative.startsWith(`${recursive}/`) ||
+                recursive.startsWith(`${relative}/`))) ||
+            expanded.some((p) => p === relative || p.startsWith(`${relative}/`))
+          ) {
+            visit(file, new Set([...ancestors, fs.realpathSync.native(file)]));
+          }
+        } else if (entry.isFile() || entry.isSymbolicLink()) this.files.push(file);
       }
     };
-    visit(this.root);
+    visit(this.root, new Set([this.root]));
     return {
+      symlinks,
+      revision: this.revision,
       name: path.basename(this.root),
       root: this.root,
       files: this.files.map((file) => this.relative(file)),
       directories: this.directories,
       unreadableDirectories: this.unreadableDirectories,
       typescript: ts.version,
+      analysisExcludedPaths: this.analysisExcludedPaths,
     };
+  }
+
+  visiblePaths(): string[] {
+    return [...this.directories, ...this.files.map((file) => this.relative(file))];
   }
 
   /** 相対パスをプロジェクト内の実体ファイルに解決する。UI と MCP が同じ境界を共有する (シンボリックリンクの実体も含む)。 */
@@ -146,7 +235,7 @@ export class Workspace {
     // これは読み込み後の変更を検出する仕組みで、他のプロセスの書き込みを防ぐロックではない。
     // 本文は BOM 無しで扱うので、ディスクに BOM があったファイルには書き戻す。
     const encoded = Buffer.from(text, 'utf8');
-    fs.writeFileSync(
+    writeReplacing(
       file,
       hasByteOrderMark(bytes) ? Buffer.concat([byteOrderMark, encoded]) : encoded,
     );
@@ -191,7 +280,8 @@ export class Workspace {
   }
 
   diagnostics(relative: string): ResponseOf<'diagnostics'> {
-    if (!isSource(relative)) return { diagnostics: [], scope: null };
+    if (!isSource(relative) || isExcludedPath(relative, false, this.analysisExcludedPaths))
+      return { diagnostics: [], scope: null };
     const project = this.prepareProject(this.resolve(relative));
     // getProgram() は呼ぶたびに全ファイルの版を確かめ直す。1 回の要求で 1 回だけ取る。
     const program = project.language.getProgram();
@@ -259,7 +349,8 @@ export class Workspace {
   }
 
   private semantic(relative: string): { language: ts.LanguageService; file: string } | undefined {
-    if (!isSource(relative)) return undefined;
+    if (!isSource(relative) || isExcludedPath(relative, false, this.analysisExcludedPaths))
+      return undefined;
     const file = this.resolve(relative);
     return { language: this.prepareProject(file).language, file };
   }
@@ -286,13 +377,33 @@ export class Workspace {
     let directory = path.dirname(file);
     while (directory !== this.root && !fs.existsSync(path.join(directory, 'tsconfig.json')))
       directory = path.dirname(directory);
-    const project = this.projects.get(directory) ?? this.createProject(directory);
+    const project = this.projectFor(path.join(directory, 'tsconfig.json'), file, new Set());
     project.extra = project.files.includes(file) ? undefined : file;
     return project;
   }
 
-  private createProject(directory: string): Project {
-    const configPath = path.join(directory, 'tsconfig.json');
+  /**
+   * 設定ファイルのプロジェクトのうち file を解析するものを返す。references だけを持つ設定 (Vite などの
+   * solution 形式) では、file を含む参照先を使う。どの参照先にも無ければ、自身に include があれば自身、
+   * 無ければ最初の参照先に extra として加える。設定自身の compilerOptions で解析すると誤った診断になる。
+   */
+  private projectFor(configPath: string, file: string, visited: Set<string>): Project {
+    visited.add(configPath);
+    const project = this.projects.get(configPath) ?? this.createProject(configPath);
+    if (project.files.includes(file)) return project;
+    const candidates = project.references
+      .filter((reference) => !visited.has(reference))
+      .map((reference) => this.projectFor(reference, file, visited));
+    return (
+      candidates.find((candidate) => candidate.files.includes(file)) ??
+      (project.files.length ? project : (candidates[0] ?? project))
+    );
+  }
+
+  private createProject(configPath: string): Project {
+    // 最初のプロジェクトを作る時点のディスクの版を覚える。監視の初回イベントや起動前の変更で作り直さない。
+    if (!this.projects.size) this.projectsRevision = this.diskRevision;
+    const directory = path.dirname(configPath);
     const config = ts.readConfigFile(configPath, ts.sys.readFile);
     if (config.error && fs.existsSync(configPath))
       throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
@@ -307,7 +418,8 @@ export class Workspace {
               allowJs: true,
               noEmit: true,
             },
-            exclude: excludedDirectories,
+            // ツリー表示の設定で、設定ファイルのないプロジェクトの解析範囲は広げない。
+            exclude: defaultAnalysisExcludedPaths,
           }
         : config.config,
       ts.sys,
@@ -329,11 +441,18 @@ export class Workspace {
     };
     const files = parsed.fileNames.filter((file) => {
       const real = isSource(file) ? realpath(file) : undefined;
-      return real !== undefined && insideRoot(this.root, real);
+      return (
+        real !== undefined &&
+        insideRoot(this.root, real) &&
+        !isExcludedPath(this.relative(real), false, this.analysisExcludedPaths)
+      );
     });
     const project: Project = {
       files,
       scope: this.relative(configPath),
+      references: (parsed.projectReferences ?? [])
+        .map((reference) => path.resolve(ts.resolveProjectReferencePath(reference)))
+        .filter((reference) => insideRoot(this.root, reference) && fs.existsSync(reference)),
       language: ts.createLanguageService({
         getScriptFileNames: () => scriptFiles(project),
         getScriptVersion: (file) => this.overlays.get(file)?.version ?? diskVersion(file),
@@ -353,7 +472,7 @@ export class Workspace {
         useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
       }),
     };
-    this.projects.set(directory, project);
+    this.projects.set(configPath, project);
     return project;
   }
 
@@ -377,6 +496,7 @@ export class Workspace {
     span: { start: number; length: number },
   ): Location | null {
     if (!insideRoot(this.root, file) || !isSource(file)) return null;
+    if (isExcludedPath(this.relative(file), false, this.analysisExcludedPaths)) return null;
     const source = program?.getSourceFile(file);
     if (!source) return null;
     const start = source.getLineAndCharacterOfPosition(span.start);
@@ -394,4 +514,42 @@ export class Workspace {
       preview: source.text.slice(lineStarts[start.line], lineEnd).trim(),
     };
   }
+}
+
+/**
+ * 同じディレクトリの一時ファイルに書き切ってから置き換え、容量不足や中断で元の内容を失わない。
+ * file は実体パス (resolve 済み) なので、シンボリックリンク自体ではなく指す先が置き換わる。
+ * ハードリンクされたファイルは他のリンクからも同じ内容が見えるよう、一時ファイルで容量を確かめてから上書きする。
+ * 一時ファイルを作れないディレクトリでは、従来どおり上書きする。
+ */
+function writeReplacing(file: string, data: Buffer): void {
+  const stat = fs.statSync(file);
+  const temporary = path.join(
+    path.dirname(file),
+    `.${path.basename(file)}.${process.pid}.${Date.now().toString(36)}.plasma-save`,
+  );
+  try {
+    fs.writeFileSync(temporary, data, { flag: 'wx' });
+    // umask を通さず、元のファイルの権限をそのまま引き継ぐ。
+    fs.chmodSync(temporary, stat.mode & 0o777);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    if (!isPermissionError(error)) throw error;
+    fs.writeFileSync(file, data);
+    return;
+  }
+  try {
+    if (stat.nlink > 1) fs.writeFileSync(file, data);
+    else fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function isPermissionError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EROFS')
+  );
 }

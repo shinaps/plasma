@@ -4,12 +4,15 @@ import path from 'node:path';
 import { z } from 'zod';
 import { type Appearance, appearanceSchema } from '../shared/appearance.ts';
 import { errorCode, errorMessage } from '../shared/errors.ts';
+import { defaultAnalysisExcludedPaths, defaultExcludedPaths } from '../shared/explorer-settings.ts';
 import { formatterIdSchema, type ProjectSettings, type RecentProject } from '../shared/protocol.ts';
 
 const recentProjectsSchema = z.array(z.object({ root: z.string(), name: z.string() }));
 const projectSettingsSchema = z.object({
   formatOnSave: z.boolean().default(false),
   formatter: formatterIdSchema.default('auto'),
+  excludedPaths: z.array(z.string()).default(defaultExcludedPaths),
+  analysisExcludedPaths: z.array(z.string()).default(defaultAnalysisExcludedPaths),
 });
 
 /** 設定ファイルが無ければ undefined。壊れていれば、直すべきファイルが分かるエラーにする。 */
@@ -71,6 +74,17 @@ export class StateStore {
       readJsonFile(this.settingsFile(root), projectSettingsSchema) ??
       projectSettingsSchema.parse({})
     );
+  }
+  /**
+   * 壊れた設定ファイルでも既定値で続ける読み方。文書の保存を設定の破損で止めないために使う。
+   * ファイルは上書きしない。利用者が直すか消すまで warning で知らせる。
+   */
+  readSettingsOrDefault(root: string): { settings: ProjectSettings; warning?: string } {
+    try {
+      return { settings: this.readSettings(root) };
+    } catch (error) {
+      return { settings: projectSettingsSchema.parse({}), warning: errorMessage(error) };
+    }
   }
   writeSettings(root: string, settings: ProjectSettings): void {
     writeJsonAtomic(this.settingsFile(root), settings);

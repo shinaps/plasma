@@ -4,9 +4,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type TestContext, test } from 'node:test';
-import { gitDiff, gitStatus } from '../server/git.ts';
+import { commitFiles, gitBranches, gitDiff, gitStatus, switchBranch } from '../server/git.ts';
 import { gitCommit, gitCommitDiff, gitHistory } from '../server/git-history.ts';
 import { Workspace } from '../server/workspace.ts';
+
+// 利用者のグローバル設定 (commit.gpgsign や filter の定義) に左右されないよう、空の設定だけを使う。
+const globalConfig = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-gitconfig-')),
+  'gitconfig',
+);
+process.env.GIT_CONFIG_GLOBAL = globalConfig;
+process.env.GIT_CONFIG_NOSYSTEM = '1';
 
 const wholeHistory = { revisions: ['HEAD'], query: '', skip: 0 };
 
@@ -113,11 +121,36 @@ test('Git status reports repositories without an initial commit and non-Git dire
 // 信用できないリポジトリ (展開した zip など) を開いただけで、その .git/config に書かれたコマンドが
 // 自動の git status から実行されると、任意のコードが動くことになる。
 test('automatic status never runs commands configured inside the opened repository', (context) => {
-  const { git, root } = fixture(context);
+  const { git, write, root } = fixture(context);
   const marker = path.join(root, 'fsmonitor-ran');
   git('config', 'core.fsmonitor', `sh -c 'touch "${marker}"'`);
   gitStatus(root);
   assert.equal(fs.existsSync(marker), false);
+  // clean filter は stat の食い違うファイル (展開直後はすべて) の比較のために status からも実行される。
+  const filtered = path.join(root, 'filter-ran');
+  git('config', 'filter.local.clean', `sh -c 'touch "${filtered}"; cat'`);
+  git('config', 'filter.local.required', 'true');
+  write('.gitattributes', '*.ts filter=local\n');
+  write('file with spaces.ts', 'export const value = 1;\n');
+  const state = gitStatus(root);
+  assert.equal(fs.existsSync(filtered), false);
+  assert.deepEqual(
+    state.entries.map((entry) => entry.path),
+    ['.gitattributes'],
+  );
+  // 利用者のグローバル設定にある定義 (git lfs install など) は、リポジトリが同じ名前で上書きしていても使う。
+  const trusted = path.join(root, 'trusted-ran');
+  execFileSync('git', [
+    'config',
+    '--global',
+    'filter.local.clean',
+    `sh -c 'touch "${trusted}"; cat'`,
+  ]);
+  context.after(() => fs.rmSync(globalConfig, { force: true }));
+  write('file with spaces.ts', 'export const value = 1;\n');
+  gitStatus(root);
+  assert.equal(fs.existsSync(trusted), true);
+  assert.equal(fs.existsSync(filtered), false);
 });
 
 test('history compares immutable commits, including roots, renames and deletions', (context) => {
@@ -313,6 +346,127 @@ test('複数ブランチの履歴を重複なく統合し、比較元への到�
     compareRef: 'refs/heads/feature',
   });
   assert.equal(switched.comparison?.outsideCount, 2);
-  assert.throws(() => gitHistory(root, { ...wholeHistory, revisions: ['--all'] }));
-  assert.throws(() => gitHistory(root, { ...wholeHistory, compareRef: '--all' }));
+  // 参照一覧に無い文字列はオプションとして git に渡さず、存在しない参照として知らせる。
+  const injected = gitHistory(root, { ...wholeHistory, revisions: ['--all'] });
+  assert.deepEqual(injected.missing, ['--all']);
+  assert.deepEqual(injected.selection, initial.selection);
+  assert.deepEqual(gitHistory(root, { ...wholeHistory, compareRef: '--all' }).missing, ['--all']);
+  // 保存された選択のブランチが消えても、残りの選択で履歴を表示し、消えた参照を知らせる。
+  git('update-ref', '-d', 'refs/heads/feature');
+  const pruned = gitHistory(root, {
+    ...wholeHistory,
+    revisions: ['refs/heads/feature', 'refs/remotes/origin/main'],
+    compareRef: 'refs/heads/feature',
+  });
+  assert.deepEqual(pruned.missing, ['refs/heads/feature', 'refs/heads/feature']);
+  assert.deepEqual(pruned.selection, ['refs/remotes/origin/main']);
+  assert.equal(pruned.comparison?.ref, 'refs/remotes/origin/main');
+});
+
+test('ignore colors use Git rules including negation, tracked files and nested project roots', (context) => {
+  const { root, git, write } = fixture(context);
+  fs.mkdirSync(path.join(root, 'notes'));
+  write('notes/tracked.txt', 'tracked');
+  git('add', 'notes/tracked.txt');
+  git('commit', '-m', 'track file before ignoring it');
+  write('.gitignore', 'notes/*\n!notes/keep.txt\n');
+  write('notes/ignored.txt', 'ignored');
+  write('notes/keep.txt', 'visible');
+  const paths = ['notes', 'notes/ignored.txt', 'notes/keep.txt', 'notes/tracked.txt'];
+  const state = gitStatus(root, paths);
+  assert.deepEqual(state.ignoredPaths, ['notes/ignored.txt']);
+  assert.ok(!state.entries.some((entry) => entry.path === 'notes/ignored.txt'));
+  assert.deepEqual(
+    gitStatus(path.join(root, 'notes'), ['ignored.txt', 'keep.txt', 'tracked.txt']).ignoredPaths,
+    ['ignored.txt'],
+  );
+  write('.gitignore', 'notes/\n');
+  assert.deepEqual(gitStatus(root, paths).ignoredPaths, ['notes/ignored.txt', 'notes/keep.txt']);
+  write('.gitignore', '');
+  assert.deepEqual(gitStatus(root, paths).ignoredPaths, []);
+});
+
+test('新規ファイルの比較元の有無を内容ではなく比較範囲で判定する', (context) => {
+  const { workspace, git, write, root } = fixture(context);
+  write('new.txt', 'new\n');
+  for (const mode of ['all', 'working', 'staged'] as const)
+    assert.equal(gitDiff(workspace, 'new.txt', mode).originalExists, false);
+  git('add', '-N', 'new.txt');
+  assert.equal(gitDiff(workspace, 'new.txt', 'working').originalExists, false);
+  git('add', 'new.txt');
+  write('new.txt', 'updated\n');
+  assert.equal(gitDiff(workspace, 'new.txt', 'all').originalExists, false);
+  assert.equal(gitDiff(workspace, 'new.txt', 'staged').originalExists, false);
+  assert.equal(gitDiff(workspace, 'new.txt', 'working').originalExists, true);
+  write('empty.txt', '');
+  git('add', '.');
+  git('commit', '-m', 'Add files');
+  assert.equal(gitCommitDiff(root, 'HEAD', 'new.txt').originalExists, false);
+  write('empty.txt', 'content\n');
+  const diff = gitDiff(workspace, 'empty.txt', 'all');
+  assert.equal(diff.original, '');
+  assert.equal(diff.originalExists, true);
+  git('add', '.');
+  git('commit', '-m', 'Fill empty file');
+  assert.equal(gitCommitDiff(root, 'HEAD', 'empty.txt').originalExists, true);
+});
+
+test('チェックしたファイルだけをコミットし、無関係なステージ済み変更を保持する', (context) => {
+  const { git, write, root } = fixture(context);
+  write('deleted.txt', 'unrelated staged edit');
+  git('add', 'deleted.txt');
+  write('file with spaces.ts', 'export const value = 42;\n');
+  // パスが pathspec のパターンとして解釈されると、選んでいないファイルがコミットされる。
+  write('[literal].txt', 'new file');
+  const { hash } = commitFiles(root, ['file with spaces.ts', '[literal].txt'], 'Selected changes');
+  assert.equal(hash, git('rev-parse', 'HEAD').trim());
+  assert.deepEqual(
+    git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').trim().split('\n').sort(),
+    ['[literal].txt', 'file with spaces.ts'],
+  );
+  assert.equal(git('diff', '--cached', '--name-only').trim(), 'deleted.txt');
+  assert.equal(git('show', 'HEAD:deleted.txt'), 'deleted\n');
+  assert.throws(() => commitFiles(root, ['../outside'], 'Invalid'), /No current change/);
+});
+
+test('コミット失敗時は履歴を変えず、選択対象をステージしたままエラーを伝える', (context) => {
+  const { git, write, root } = fixture(context);
+  write('file with spaces.ts', 'changed');
+  const before = git('rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(root, '.git/hooks/pre-commit'), '#!/bin/sh\nexit 1\n', {
+    mode: 0o755,
+  });
+  assert.throws(() => commitFiles(root, ['file with spaces.ts'], 'Rejected'), /remain staged/);
+  assert.equal(git('rev-parse', 'HEAD'), before);
+  assert.equal(git('diff', '--cached', '--name-only').trim(), 'file with spaces.ts');
+});
+
+test('改名と削除の選択は旧パスも含めてコミットする', (context) => {
+  const { git, root } = fixture(context);
+  git('mv', 'file with spaces.ts', 'renamed.ts');
+  fs.unlinkSync(path.join(root, 'deleted.txt'));
+  commitFiles(root, ['renamed.ts', 'deleted.txt'], 'Rename and delete');
+  assert.equal(git('status', '--porcelain'), '');
+  assert.equal(git('ls-tree', '--name-only', 'HEAD').trim(), 'renamed.ts');
+});
+
+test('ブランチ切り替えは上書きになる変更を拒否し、既存の作業を保つ', (context) => {
+  const { root, git, write } = fixture(context);
+  git('switch', '-c', 'feature');
+  write('file with spaces.ts', 'feature content');
+  git('add', '.');
+  git('commit', '-m', 'feature');
+  switchBranch(root, 'main');
+  assert.deepEqual(gitBranches(root).branches, ['feature', 'main']);
+  write('file with spaces.ts', 'local edit');
+  assert.throws(() => switchBranch(root, 'feature'));
+  assert.equal(gitStatus(root).branch, 'main');
+  assert.equal(fs.readFileSync(path.join(root, 'file with spaces.ts'), 'utf8'), 'local edit');
+  write('file with spaces.ts', 'export const value = 1;\n');
+  write('untracked.txt', 'keep me');
+  assert.equal(switchBranch(root, 'feature').branch, 'feature');
+  assert.equal(fs.readFileSync(path.join(root, 'untracked.txt'), 'utf8'), 'keep me');
+  // ブランチ名がオプションとして解釈されると、未保存の作業が破棄される。
+  assert.throws(() => switchBranch(root, '--discard-changes'));
+  assert.equal(gitStatus(root).branch, 'feature');
 });

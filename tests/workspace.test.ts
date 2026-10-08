@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type TestContext, test } from 'node:test';
+import { setTimeout } from 'node:timers/promises';
 import { Workspace } from '../server/workspace.ts';
 
 // 2345: 引数の型が合わない、2322: 代入の型が合わない。
@@ -39,6 +40,28 @@ function fixture(context: TestContext) {
   });
   return { workspace, root };
 }
+
+test('外部の作成・移動・削除を再走査後も監視し、最新のツリーを取得できる', async (context) => {
+  const { workspace, root } = fixture(context);
+  async function change(action: () => void): Promise<void> {
+    const revision = workspace.revision;
+    action();
+    const deadline = Date.now() + 5000;
+    while (workspace.revision === revision && Date.now() < deadline) await setTimeout(25);
+    assert.ok(workspace.revision > revision, '外部の変更で revision が更新される');
+  }
+  await change(() => {
+    fs.mkdirSync(path.join(root, 'nested'));
+    fs.writeFileSync(path.join(root, 'nested/new.ts'), 'export const value = 1;');
+  });
+  assert.ok(workspace.rescan().files.includes('nested/new.ts'));
+  await change(() => fs.renameSync(path.join(root, 'nested'), path.join(root, 'renamed')));
+  const moved = workspace.rescan();
+  assert.ok(moved.files.includes('renamed/new.ts'));
+  assert.ok(!moved.directories.includes('nested'));
+  await change(() => fs.rmSync(path.join(root, 'renamed'), { recursive: true }));
+  assert.ok(!workspace.rescan().files.includes('renamed/new.ts'));
+});
 
 test('semantic navigation resolves cross-file symbols and includes their references', (context) => {
   const { workspace } = fixture(context);
@@ -109,6 +132,50 @@ test('save preserves external changes on revision conflict; retry requires new d
   assert.notEqual(saved.revision, current.revision);
 });
 
+test('save keeps the original until the new content is fully written, and keeps mode and links', (context) => {
+  const { workspace, root } = fixture(context);
+  const file = path.join(root, 'main.ts');
+  fs.chmodSync(file, 0o755);
+  const document = workspace.read('main.ts');
+  workspace.save('main.ts', '// replaced\n', document.revision);
+  assert.equal(fs.readFileSync(file, 'utf8'), '// replaced\n');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o755);
+  assert.deepEqual(
+    fs.readdirSync(root).filter((name) => name.includes('plasma-save')),
+    [],
+  );
+  // ハードリンクされたファイルは、もう一方のリンクからも保存後の内容が見える。
+  const linked = path.join(root, 'linked.ts');
+  fs.linkSync(path.join(root, 'math.ts'), linked);
+  const math = workspace.read('math.ts');
+  workspace.save('math.ts', 'export const linked = 1;\n', math.revision);
+  assert.equal(fs.readFileSync(linked, 'utf8'), 'export const linked = 1;\n');
+  // 一時ファイルを作れないディレクトリでも、書き込めるファイルの保存は続けられる。
+  const sealed = path.join(root, 'sealed');
+  fs.mkdirSync(sealed);
+  fs.writeFileSync(path.join(sealed, 'inside.ts'), 'export const inside = 1;\n');
+  const inside = workspace.read('sealed/inside.ts');
+  fs.chmodSync(sealed, 0o555);
+  try {
+    if (process.getuid?.() === 0) return;
+    assert.throws(() => fs.writeFileSync(path.join(sealed, 'probe'), ''));
+    workspace.save('sealed/inside.ts', 'export const inside = 2;\n', inside.revision);
+    assert.equal(
+      fs.readFileSync(path.join(sealed, 'inside.ts'), 'utf8'),
+      'export const inside = 2;\n',
+    );
+  } finally {
+    fs.chmodSync(sealed, 0o755);
+  }
+});
+
+test('Git のメタデータはテキストとして読み書きでき、構造の変更だけを file-operations が拒否する', (context) => {
+  const { workspace, root } = fixture(context);
+  fs.mkdirSync(path.join(root, '.git'));
+  fs.writeFileSync(path.join(root, '.git/HEAD'), 'ref: refs/heads/main\n');
+  assert.equal(workspace.read('.git/HEAD').text, 'ref: refs/heads/main\n');
+});
+
 test('project boundary rejects path traversal and symlink escapes', (context) => {
   const { workspace, root } = fixture(context);
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-outside-'));
@@ -140,7 +207,7 @@ test('repository tree includes text and empty directories while semantics follow
   const tree = workspace.rescan();
   assert.ok(tree.files.includes('README.md'));
   assert.ok(tree.directories.includes('apps/strict/empty'));
-  assert.ok(!tree.directories.includes('node_modules'));
+  assert.ok(tree.directories.includes('node_modules'));
   assert.equal(workspace.read('README.md').text, '# Project\n');
   assert.throws(() => workspace.read('image.bin'), /binary/);
   assert.equal(workspace.diagnostics('README.md').scope, null);
@@ -154,6 +221,38 @@ test('repository tree includes text and empty directories while semantics follow
 
 // include の外のファイルを 1 つの言語サービスで共有すると、先に開いたファイルのエラーが別のファイルの診断に混ざったり、
 // 開いた順番で診断の結果が変わったりする。
+test('references だけの tsconfig では、ファイルを含む参照先の設定で診断する', (context) => {
+  const { workspace, root } = fixture(context);
+  const config = (name: string, value: unknown): void => {
+    fs.writeFileSync(path.join(root, name), JSON.stringify(value));
+  };
+  config('tsconfig.json', {
+    files: [],
+    references: [{ path: './tsconfig.app.json' }, { path: './tsconfig.node.json' }],
+  });
+  const compilerOptions = { module: 'ESNext', moduleResolution: 'Bundler', target: 'ES2022' };
+  config('tsconfig.app.json', {
+    compilerOptions: { ...compilerOptions, strict: true },
+    include: ['src'],
+  });
+  config('tsconfig.node.json', {
+    compilerOptions: { ...compilerOptions, strict: false },
+    include: ['server'],
+  });
+  for (const file of ['src/app.ts', 'server/main.ts', 'scripts/build.ts']) {
+    fs.mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), 'export const value: string = null;\n');
+  }
+  const app = workspace.diagnostics('src/app.ts');
+  assert.equal(app.scope, 'tsconfig.app.json');
+  assert.equal(app.diagnostics.length, 1);
+  const server = workspace.diagnostics('server/main.ts');
+  assert.equal(server.scope, 'tsconfig.node.json');
+  assert.deepEqual(server.diagnostics, []);
+  // どの参照先にも無いファイルは、最初の参照先の設定で解析する。
+  assert.equal(workspace.diagnostics('scripts/build.ts').scope, 'tsconfig.app.json');
+});
+
 test('diagnostics of a file outside the config include depend only on that file', (context) => {
   const { workspace, root } = fixture(context);
   fs.mkdirSync(path.join(root, 'extra'));
@@ -182,7 +281,7 @@ test('unreadable descendants do not block readable files, but an unreadable root
     const result = workspace.rescan();
     assert.ok(result.files.includes('main.ts'));
     assert.deepEqual(result.unreadableDirectories, ['cloud']);
-    assert.ok(!result.files.some((file) => file.startsWith('.build/')));
+    assert.ok(result.files.includes('.build/generated.ts'));
     fs.chmodSync(root, 0o000);
     assert.throws(() => workspace.rescan(), /EACCES/);
   } finally {
@@ -281,4 +380,31 @@ test('image preview preserves bytes and respects the workspace boundary', () => 
     workspace.dispose();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('lazy tree shows generated folders and links without following unopened or escaping directories', (context) => {
+  const { workspace, root } = fixture(context);
+  fs.mkdirSync(path.join(root, 'node_modules/deep'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'node_modules/deep/value.ts'), '');
+  fs.symlinkSync('node_modules', path.join(root, 'linked'));
+  fs.symlinkSync(root, path.join(root, 'loop'));
+  fs.symlinkSync('/missing/plasma-test', path.join(root, 'broken'));
+  fs.symlinkSync(path.dirname(root), path.join(root, 'outside'));
+  const closed = workspace.rescan([], [], []);
+  assert.ok(closed.directories.includes('node_modules'));
+  assert.ok(closed.directories.includes('linked'));
+  assert.ok(!closed.directories.includes('node_modules/deep'));
+  for (const name of ['broken', 'outside', 'loop']) assert.ok(closed.files.includes(name));
+  assert.equal(closed.symlinks.linked, 'node_modules');
+  const opened = workspace.rescan([], [], ['linked/deep']);
+  assert.ok(opened.files.includes('linked/deep/value.ts'));
+  assert.ok(!opened.files.includes('node_modules/deep/value.ts'));
+  assert.throws(() => workspace.read('outside/anything'));
+  const recursive = workspace.rescan([], [], [], 'linked');
+  assert.ok(recursive.files.includes('linked/deep/value.ts'));
+  assert.ok(!recursive.files.includes('node_modules/deep/value.ts'));
+  const search = workspace.rescan([], [], [], '');
+  assert.ok(search.files.includes('node_modules/deep/value.ts'));
+  assert.ok(search.files.includes('loop'));
+  assert.ok(!search.directories.some((p) => p.startsWith('loop/')));
 });

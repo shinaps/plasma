@@ -8,6 +8,9 @@ import type {
   HistoryCommit,
   SendRequest,
 } from '../../../shared/protocol.ts';
+import { Alert } from '../../components/ui/alert';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
 import {
   Select,
   SelectContent,
@@ -36,8 +39,6 @@ type DetailState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'loaded'; detail: CommitDetail };
-const buttonStyle =
-  'rounded-control border-0 bg-transparent p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-40';
 
 function CommitFiles({ detail, onFile }: { detail: CommitDetail; onFile: Props['onFile'] }) {
   const host = useRef<HTMLDivElement>(null);
@@ -69,10 +70,12 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
   const [history, setHistory] = useState<GitHistory>({
     refs: [],
     selection: [],
+    missing: [],
     commits: [],
     tips: [] as string[],
     hasMore: false,
   });
+  const [missingNotice, setMissingNotice] = useState('');
   const [selected, setSelected] = useState('');
   const [detail, setDetail] = useState<DetailState>({ status: 'idle' });
   const [historyError, setHistoryError] = useState('');
@@ -95,6 +98,16 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
           ...result,
           commits: historyQuery.skip ? [...previous.commits, ...result.commits] : result.commits,
         }));
+        if (!result.missing.length) return;
+        // 消えたブランチは選択から外し、黙って別の履歴を見せないよう知らせる。外した選択は保存して次回も使わない。
+        const missing = new Set(result.missing);
+        const revisions = historyQuery.revisions.filter((ref) => !missing.has(ref));
+        const compareRef = missing.has(historyQuery.compareRef) ? '' : historyQuery.compareRef;
+        setMissingNotice(
+          `No longer in this repository: ${[...missing].join(', ')}. Removed from the selection.`,
+        );
+        saveHistoryPreferences(root, { revisions, compareRef });
+        setHistoryQuery((previous) => ({ ...previous, revisions, compareRef }));
       })
       .catch((error: unknown) => {
         if (current) setHistoryError(errorMessage(error));
@@ -105,7 +118,7 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
     return () => {
       current = false;
     };
-  }, [request, historyQuery]);
+  }, [request, historyQuery, root]);
 
   useEffect(() => {
     if (!selected) {
@@ -167,33 +180,38 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
             changeFilter(selection, search.trim());
           }}
         >
-          <input
+          <Input
+            density="compact"
             aria-label="Search commit messages"
             placeholder="Search commit messages…"
             value={search}
             maxLength={limits.historyQuery}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-full max-w-sm rounded-control border-0 bg-background px-2.5 py-1.5 text-foreground outline-none focus:ring-1 focus:ring-primary"
+            className="max-w-sm border-0 focus:ring-1 focus:ring-primary"
           />
         </form>
-        <button
+        <Button
+          variant="ghost"
+          size="content"
           type="button"
-          className={buttonStyle}
-          title="Refresh History"
+          className="p-1.5"
+          tooltip="Refresh History"
           aria-label="Refresh History"
           onClick={() => changeFilter()}
         >
           <RefreshCw size={14} />
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="ghost"
+          size="content"
           type="button"
-          className={buttonStyle}
-          title="Close History"
+          className="p-1.5"
+          tooltip="Close History"
           aria-label="Close History"
           onClick={onClose}
         >
           <X size={14} />
-        </button>
+        </Button>
       </header>
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-2 text-caption">
         <span className="text-muted-foreground">Compare with</span>
@@ -228,13 +246,15 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
               {history.comparison.tip.slice(0, 7)}
             </span>
             {!selection.includes(history.comparison.ref) && (
-              <button
+              <Button
+                variant="ghost"
+                size="content"
                 type="button"
-                className={buttonStyle}
+                className="p-1.5"
                 onClick={() => changeFilter([...selection, history.comparison?.ref ?? 'HEAD'])}
               >
                 Show base in graph
-              </button>
+              </Button>
             )}
             {history.comparison.ref.startsWith('refs/remotes/') && (
               <span className="ml-auto text-muted-foreground">
@@ -247,9 +267,14 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
         )}
       </div>
       {historyError && (
-        <p role="alert" className="m-0 max-h-16 overflow-auto px-3 py-2 text-destructive">
+        <Alert className="m-0 max-h-16 overflow-auto px-3 py-2 text-destructive">
           {historyError}
-        </p>
+        </Alert>
+      )}
+      {missingNotice && !historyError && (
+        <Alert role="status" className="m-0 max-h-16 overflow-auto px-3 py-2">
+          {missingNotice}
+        </Alert>
       )}
       <div
         className={`grid min-h-0 flex-1 gap-2 overflow-x-auto px-2 pb-2 ${selected ? 'grid-cols-[minmax(160px,18%)_minmax(360px,1fr)_minmax(220px,28%)]' : 'grid-cols-[minmax(160px,18%)_minmax(360px,1fr)]'}`}
@@ -260,14 +285,16 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
         >
           <div className="flex items-center justify-between gap-1 px-2 py-1 text-muted-foreground">
             <span>Show branches · {selection.length}</span>
-            <button
+            <Button
+              variant="ghost"
+              size="content"
               type="button"
-              className={buttonStyle}
+              className="p-1.5"
               title="Restore current and default branches"
               onClick={() => changeFilter([], search.trim(), '')}
             >
               Reset
-            </button>
+            </Button>
           </div>
           <BranchTree
             refs={history.refs}
@@ -304,9 +331,11 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
             </p>
           )}
           {!loading && history.hasMore && (
-            <button
+            <Button
+              variant="ghost"
+              size="content"
               type="button"
-              className={`${buttonStyle} mx-auto flex items-center gap-1`}
+              className="mx-auto flex items-center gap-1 p-1.5"
               onClick={() => {
                 setLoading(true);
                 setHistoryQuery({
@@ -321,7 +350,7 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
             >
               <ChevronDown size={14} />
               Load More
-            </button>
+            </Button>
           )}
         </section>
         <section
@@ -330,9 +359,7 @@ function GitHistoryPanel({ root, request, onClose, onSelect, onFile }: Props) {
           aria-label="Commit details"
         >
           {detail.status === 'error' && (
-            <p role="alert" className="m-0 px-2 py-1 text-destructive">
-              {detail.message}
-            </p>
+            <Alert className="m-0 px-2 py-1 text-destructive">{detail.message}</Alert>
           )}
           {detail.status === 'loaded' ? (
             <>

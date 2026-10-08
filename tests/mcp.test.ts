@@ -62,7 +62,7 @@ test('MCP handshake, entrypoint metadata, UI resource and tool round-trip', asyn
   const root = (opened.structuredContent as { root: string }).root;
   const result = await client.callTool({
     name: 'workbench_request',
-    arguments: { op: 'workspace', root },
+    arguments: { op: 'workspace', root, expanded: ['src'] },
   });
   assert.equal(result.isError, undefined);
   assert.ok((result.structuredContent as { files: string[] }).files.includes('src/main.ts'));

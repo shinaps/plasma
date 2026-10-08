@@ -1,4 +1,5 @@
 import type { ResponseOf, SendRequest } from '../../../shared/protocol.ts';
+import { confirmDialog } from '../../components/file-dialog';
 
 type OpenResult = ResponseOf<'project-open'>;
 
@@ -10,9 +11,9 @@ export async function openProject(
   const result = await request({ op: 'project-open', path });
   if (!result.confirmationRequired) return result;
   if (
-    !confirm(
+    !(await confirmDialog(
       `Open this broad folder?\n\n${result.root}\n\nThis may include many unrelated files and take longer to load. Open a project folder instead unless this is intentional.`,
-    )
+    ))
   )
     return;
   return request({ op: 'project-open', path: result.root, confirmedRoot: result.root });

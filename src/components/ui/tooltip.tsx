@@ -10,7 +10,7 @@ export function Tooltip({
 }: {
   children: ReactElement;
   title: string;
-  description: ReactNode;
+  description?: ReactNode;
 }) {
   return (
     <TooltipPrimitive.Root>
@@ -22,10 +22,12 @@ export function Tooltip({
           align="end"
           sideOffset={8}
           collisionPadding={8}
-          className="z-50 w-60 max-w-[var(--radix-tooltip-content-available-width)] rounded-control bg-popover p-3 text-caption leading-relaxed text-popover-foreground shadow-popover"
+          className="z-50 w-max max-w-[var(--radix-tooltip-content-available-width)] rounded-control bg-popover p-3 text-caption leading-relaxed text-popover-foreground shadow-popover"
         >
-          <strong className="mb-1 block">{title}</strong>
-          <span className="block text-muted-foreground">{description}</span>
+          <span className="block">{title}</span>
+          {description && (
+            <span className="mt-1 block max-w-60 text-muted-foreground">{description}</span>
+          )}
         </TooltipPrimitive.Content>
       </TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>

@@ -18,7 +18,7 @@ const shapes = {
   expand: '<path d="m7 8 5-5 5 5M7 16l5 5 5-5M4 12h16"/>',
   collapse: '<path d="m7 4 5 5 5-5M7 20l5-5 5 5M4 12h16"/>',
   locate: '<circle cx="12" cy="12" r="6"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4"/>',
-  refresh: '<path d="M20 7a8 8 0 1 0 1 8M20 2v6h-6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5"/>',
   file: '<path d="M5 2h9l5 5v15H5zM14 2v6h5"/>',
 } as const satisfies Record<string, string>;
 export type IconName = keyof typeof shapes;

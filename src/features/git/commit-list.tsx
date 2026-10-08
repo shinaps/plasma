@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import { layoutCommits } from '../../../shared/git-graph.ts';
 import type { GitHistory, HistoryCommit } from '../../../shared/protocol.ts';
+import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
 import { formatCommitDate } from './commit-date';
 import { CommitGraph } from './commit-graph';
 
@@ -15,13 +17,15 @@ type Props = {
 export function CommitList({ commits, filtered, selected, comparison, onSelect }: Props) {
   const graph = useMemo(() => layoutCommits(commits), [commits]);
   const renderRow = (commit: HistoryCommit, index: number) => (
-    <button
+    <Button
+      variant="plain"
+      size="content"
       key={commit.id}
       type="button"
       aria-pressed={selected === commit.id}
       onClick={() => onSelect(commit)}
       title={`${commit.subject}\n${commit.id}\n${commit.author} · ${formatCommitDate(commit.date)}`}
-      className={`flex h-git-log-row w-full items-center gap-2 rounded-control border-0 px-2 text-left text-caption text-foreground ${selected === commit.id ? 'bg-accent' : commit.outsideBase ? 'bg-primary/5 hover:bg-accent/50' : 'bg-transparent hover:bg-accent/50'}`}
+      className={`flex h-git-log-row w-full items-center gap-2 rounded-control border-0 px-2 text-left justify-start text-caption text-foreground ${selected === commit.id ? 'bg-accent' : commit.outsideBase ? 'bg-primary/5 hover:bg-accent/50' : 'bg-transparent hover:bg-accent/50'}`}
     >
       {!filtered && (
         <CommitGraph
@@ -55,7 +59,7 @@ export function CommitList({ commits, filtered, selected, comparison, onSelect }
           .split(', ')
           .filter((ref) => ref && !/^refs\/remotes\/[^/]+\/HEAD$/.test(ref))
           .map((ref) => (
-            <span
+            <Badge
               key={ref}
               title={ref}
               className={`min-w-0 max-w-72 truncate rounded-control px-1.5 py-0.5 text-caption ${ref.startsWith('refs/remotes/') ? 'bg-muted text-muted-foreground' : 'bg-primary/15 text-primary'}`}
@@ -64,7 +68,7 @@ export function CommitList({ commits, filtered, selected, comparison, onSelect }
                 .replace(/^tag: /, '')
                 .replace(/refs\/(heads|remotes|tags)\//g, '')
                 .replace(/^HEAD -> /, 'HEAD · ')}
-            </span>
+            </Badge>
           ))}
       </span>
       <span className="w-16 shrink-0 font-mono text-caption text-muted-foreground">
@@ -79,7 +83,7 @@ export function CommitList({ commits, filtered, selected, comparison, onSelect }
       >
         {formatCommitDate(commit.date)}
       </time>
-    </button>
+    </Button>
   );
   if (!commits.length) return null;
   // 一覧の幅が足りないときは Author、次に Date を隠し、Message の列を残す。幅はコンテナ (Commits 区画) で判定する。

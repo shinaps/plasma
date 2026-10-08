@@ -1,7 +1,8 @@
 import type * as monaco from 'monaco-editor/editor/editor.api';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { icon } from '../../lib/icons';
+import { Icon } from '../../components/icons';
+import { ToggleGroup, ToggleGroupItem } from '../../components/ui/toggle-group';
 import { renderReact, unmountReact } from '../../lib/react-view';
 import { HtmlPreview } from './html-preview';
 import { ImagePreview } from './image-preview';
@@ -72,7 +73,6 @@ export function attachDocumentPreview(
   toolbar.append(controls);
   let mode: Mode = 'code';
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const buttons = new Map<Mode, HTMLButtonElement>();
   const isSvg = () => /\.svg$/i.test(editor.getModel()?.uri.path ?? '');
   const isHtml = () => /\.html?$/i.test(editor.getModel()?.uri.path ?? '');
   const render = () => {
@@ -94,7 +94,7 @@ export function attachDocumentPreview(
     }
     renderReact(
       preview,
-      <div className="w-full break-words leading-relaxed [&_h1]:mb-6 [&_h1]:text-brand [&_h1]:font-semibold [&_h2]:mt-8 [&_h2]:mb-4 [&_h2]:text-title [&_h2]:font-semibold [&_h3]:mt-6 [&_h3]:mb-3 [&_h3]:font-semibold [&_p]:my-4 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:overflow-auto [&_pre]:rounded-control [&_pre]:bg-surface [&_pre]:p-4 [&_code]:font-mono [&_code]:text-caption [&_blockquote]:rounded-control [&_blockquote]:bg-surface [&_blockquote]:px-4 [&_blockquote]:py-1 [&_blockquote]:text-muted-foreground [&_a]:text-primary [&_a]:underline [&_table]:w-full [&_th]:p-2 [&_th]:text-left [&_th]:bg-surface [&_td]:border-b [&_td]:border-border [&_td]:p-2 [&_hr]:my-6 [&_hr]:border-border">
+      <div className="w-full break-words leading-relaxed [&_h1]:mb-6 [&_h1]:text-brand [&_h1]:font-semibold [&_h2]:mt-8 [&_h2]:mb-4 [&_h2]:text-title [&_h2]:font-semibold [&_h3]:mt-6 [&_h3]:mb-3 [&_h3]:font-semibold [&_p]:my-4 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:overflow-auto [&_pre]:rounded-control [&_pre]:bg-surface [&_pre]:p-4 [&_code]:font-mono [&_code]:text-caption [&_blockquote]:rounded-control [&_blockquote]:bg-surface [&_blockquote]:px-4 [&_blockquote]:py-1 [&_blockquote]:text-muted-foreground [&_a]:text-primary [&_a]:underline [&_table]:w-full [&_th]:p-2 [&_th]:text-left justify-start [&_th]:bg-surface [&_td]:border-b [&_td]:border-border [&_td]:p-2 [&_hr]:my-6 [&_hr]:border-border">
         <Markdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[markdownSourceLines]}
@@ -132,31 +132,36 @@ export function attachDocumentPreview(
     separator.hidden = effective !== 'split';
     if (effective === 'split') resize(sourcePercent);
     else host.style.flex = '1 1 0%';
-    for (const [value, button] of buttons)
-      button.setAttribute('aria-pressed', String(value === effective));
+    renderReact(
+      controls,
+      <ToggleGroup
+        type="single"
+        aria-label={`${label} view`}
+        value={effective}
+        onValueChange={(value) => {
+          if (value) {
+            mode = value as Mode;
+            update();
+          }
+        }}
+      >
+        {(
+          [
+            ['code', 'Code'],
+            ['preview', 'Preview'],
+            ['split', 'Split View'],
+          ] as const
+        ).map(([value, title]) => (
+          <ToggleGroupItem key={value} value={value} title={title} aria-label={title}>
+            <Icon name={value} />
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>,
+    );
     if (!preview.hidden) render();
     else unmountReact(preview);
     editor.layout();
   };
-  for (const [value, label] of [
-    ['code', 'Code'],
-    ['preview', 'Preview'],
-    ['split', 'Split View'],
-  ] as const) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.append(icon(value));
-    button.setAttribute('aria-label', label);
-    button.title = label;
-    button.className =
-      'inline-grid size-7 place-items-center rounded-control text-muted-foreground hover:bg-accent aria-pressed:bg-accent aria-pressed:text-foreground';
-    button.onclick = () => {
-      mode = value;
-      update();
-    };
-    buttons.set(value, button);
-    controls.append(button);
-  }
   const shareSelection = () => {
     const lines = selectedMarkdownLines(preview);
     const model = editor.getModel();
@@ -183,6 +188,7 @@ export function attachDocumentPreview(
     clearTimeout(timer);
     for (const subscription of subscriptions) subscription.dispose();
     unmountReact(preview);
+    unmountReact(controls);
   });
   update();
   return surface;

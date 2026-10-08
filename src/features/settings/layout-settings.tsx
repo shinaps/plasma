@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { ToggleGroup, ToggleGroupItem } from '../../components/ui/toggle-group';
 import {
   bottomPanelOptions,
   getBottomPanelSpan,
@@ -11,14 +12,22 @@ export function LayoutSettings() {
   return (
     <section aria-label="Layout">
       <h2 className="mt-8 mb-4 text-body font-semibold">Bottom Panel Width</h2>
-      <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+      <ToggleGroup
+        type="single"
+        value={span}
+        onValueChange={(value) => {
+          const option = bottomPanelOptions.find(([key]) => key === value);
+          if (option) setBottomPanelSpan(option[0]);
+        }}
+        aria-label="Bottom Panel Width"
+        className="grid grid-cols-2 gap-4 max-sm:grid-cols-1"
+      >
         {bottomPanelOptions.map(([value, label]) => (
-          <button
+          <ToggleGroupItem
+            value={value}
             key={value}
             type="button"
-            aria-pressed={span === value}
-            onClick={() => setBottomPanelSpan(value)}
-            className="rounded-panel bg-muted p-5 text-left ring-1 ring-transparent aria-pressed:ring-ring"
+            className="block h-auto w-auto rounded-panel bg-muted p-5 text-left justify-start ring-1 ring-transparent data-[state=on]:ring-ring"
           >
             <span
               aria-hidden="true"
@@ -36,9 +45,9 @@ export function LayoutSettings() {
               />
             </span>
             <span className="text-caption">{label}</span>
-          </button>
+          </ToggleGroupItem>
         ))}
-      </div>
+      </ToggleGroup>
       <p className="mt-5 text-caption leading-relaxed text-muted-foreground">
         Applies to bottom panels. Drag panel icons to reposition them and drag boundaries to resize.
       </p>

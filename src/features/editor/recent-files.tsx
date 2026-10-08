@@ -1,6 +1,7 @@
 import { ArrowUpRight } from 'lucide-react';
 import plasmaMark from '../../../assets/plasma.svg?inline';
 import { FileIcon } from '../../components/icons';
+import { Button } from '../../components/ui/button';
 import { renderReact } from '../../lib/react-view';
 
 export function showRecentFiles(
@@ -28,11 +29,13 @@ export function showRecentFiles(
         <ul className="m-0 list-none space-y-1 rounded-card bg-surface-raised p-2">
           {paths.map((path) => (
             <li key={path}>
-              <button
+              <Button
+                variant="plain"
+                size="content"
                 type="button"
                 title={path}
                 onClick={() => open(path)}
-                className="group flex w-full items-center gap-3.5 rounded-panel border-0 bg-transparent px-3 py-3 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-2 focus-visible:outline-primary"
+                className="group flex w-full items-center gap-3.5 rounded-panel border-0 bg-transparent px-3 py-3 text-left justify-start transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-2 focus-visible:outline-primary"
               >
                 <span
                   className="grid size-9 shrink-0 place-items-center rounded-control bg-surface-raised"
@@ -55,7 +58,7 @@ export function showRecentFiles(
                   aria-hidden="true"
                   className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
                 />
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

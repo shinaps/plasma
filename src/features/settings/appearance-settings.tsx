@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { Appearance } from '../../../shared/appearance.ts';
 import { errorMessage } from '../../../shared/errors.ts';
 import type { SendRequest } from '../../../shared/protocol.ts';
+import { Alert } from '../../components/ui/alert';
+import { Button } from '../../components/ui/button';
+import { Field, FieldContent, FieldDescription } from '../../components/ui/field';
+import { Label } from '../../components/ui/label';
 import {
   Select,
   SelectContent,
@@ -65,8 +69,8 @@ export function AppearanceSettings({
       <p className="text-caption text-muted-foreground">Applies to all projects.</p>
       <div className="space-y-5 rounded-panel bg-muted p-6">
         {fields.map(([key, label]) => (
-          <div key={key} className="flex items-center justify-between gap-6">
-            <label htmlFor={`font-${key}`}>{label}</label>
+          <Field key={key}>
+            <Label htmlFor={`font-${key}`}>{label}</Label>
             <Select
               disabled={!value || busy}
               value={String(value?.[key] ?? defaults[key])}
@@ -83,37 +87,35 @@ export function AppearanceSettings({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </Field>
         ))}
       </div>
       <h2 className="mt-8 mb-4 text-body font-semibold">Editor</h2>
-      <div className="flex items-center justify-between gap-6 rounded-panel bg-muted p-6">
-        <div>
-          <label htmlFor="editor-word-wrap">Word Wrap by Default</label>
-          <p className="mt-1 text-caption text-muted-foreground">
+      <Field className="rounded-panel bg-muted p-6">
+        <FieldContent>
+          <Label htmlFor="editor-word-wrap">Word Wrap by Default</Label>
+          <FieldDescription>
             Applies to both editor groups. Override from a tab’s context menu.
-          </p>
-        </div>
+          </FieldDescription>
+        </FieldContent>
         <Switch
           id="editor-word-wrap"
           disabled={!value || busy}
           checked={value?.wordWrap ?? false}
           onCheckedChange={(wordWrap) => void save({ ...value, wordWrap })}
         />
-      </div>
-      <button
+      </Field>
+      <Button
+        variant="plain"
+        size="content"
         type="button"
         disabled={!value || busy}
         onClick={() => void save({})}
         className="mt-5 rounded-control px-3 py-2 text-caption text-muted-foreground hover:bg-accent"
       >
         Reset to Defaults
-      </button>
-      {error && (
-        <p role="alert" className="text-caption text-destructive">
-          {error}
-        </p>
-      )}
+      </Button>
+      {error && <Alert className="text-caption text-destructive">{error}</Alert>}
     </section>
   );
 }

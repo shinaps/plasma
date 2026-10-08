@@ -1,3 +1,5 @@
+import { buttonVariants, createButton } from '../../components/ui/button';
+import { attachContextMenu } from '../../components/ui/context-menu';
 import { icon } from '../../lib/icons';
 import { bottomPanelOptions, getBottomPanelSpan, setBottomPanelSpan } from './layout-state';
 import {
@@ -30,7 +32,7 @@ export class ToolDock {
   visible = false;
   private readonly area: HTMLElement;
   private readonly options: ToolDockOptions;
-  private button = document.createElement('button');
+  private button = createButton();
   private readonly preview = document.createElement('div');
   private readonly workspace: HTMLElement;
   private readonly rails: HTMLElement[];
@@ -49,8 +51,17 @@ export class ToolDock {
     registerPanel(this);
     if (options.button) this.button = options.button;
     this.rails = Array.from(document.querySelectorAll<HTMLElement>('[data-dock-side]'));
-    this.button.className = 'touch-none select-none';
+    this.button.className = buttonVariants({
+      variant: 'plain',
+      size: 'content',
+      className: 'touch-none select-none',
+    });
     if (!options.button) this.button.append(icon('terminal'));
+    const label = document.createElement('span');
+    label.dataset.dockLabel = '';
+    label.className = 'hidden';
+    label.textContent = options.label;
+    this.button.append(label);
     this.button.setAttribute('aria-label', options.label);
     this.button.setAttribute('aria-controls', panel.id);
     this.button.title = `${options.label} · Drag to move (or use Alt + arrow keys)`;
@@ -80,6 +91,9 @@ export class ToolDock {
         target.closest('[role=tablist]')
       ) {
         this.button.onpointerdown?.call(this.button, event);
+        // 見出しから始めた操作はドラッグのためのもの。ブラウザが pointer capture 先のボタンに click を
+        // 合成しても、空白を押しただけでパネルが閉じない。pointerup で解除する。
+        this.suppressClick = true;
       }
     });
     this.button.onpointermove = (event) => {
@@ -208,31 +222,17 @@ export class ToolDock {
     });
   }
   private installLayoutMenu(): void {
-    const menu = document.createElement('div');
-    menu.popover = 'auto';
-    menu.className =
-      'fixed m-0 rounded-control border-0 bg-popover p-1 text-caption text-popover-foreground shadow-popover';
-    for (const [value, label] of bottomPanelOptions) {
-      const item = document.createElement('button');
-      item.textContent = label;
-      item.className = 'block w-full rounded-control px-3 py-2 text-left hover:bg-accent';
-      item.onclick = () => {
-        setBottomPanelSpan(value);
-        menu.hidePopover();
-      };
-      menu.append(item);
-    }
-    document.body.append(menu);
-    this.panel.addEventListener('contextmenu', (event) => {
-      if (this.side !== 'bottom' || !(event.target as Element).closest('header, [role=tablist]'))
-        return;
-      event.preventDefault();
-      menu.showPopover();
-      menu.style.left = `${Math.max(8, Math.min(event.clientX, innerWidth - menu.offsetWidth - 8))}px`;
-      menu.style.top = `${Math.max(8, Math.min(event.clientY, innerHeight - menu.offsetHeight - 8))}px`;
-      menu.querySelector('button')?.focus();
-    });
+    attachContextMenu(
+      this.panel,
+      (event) =>
+        this.side === 'bottom' && !!(event.target as Element).closest('header, [role=tablist]'),
+      bottomPanelOptions.map(([value, label]) => ({
+        label,
+        select: () => setBottomPanelSpan(value),
+      })),
+    );
   }
+
   private move(side: DockSide): void {
     this.side = side;
     this.place();

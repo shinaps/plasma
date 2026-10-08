@@ -31,7 +31,7 @@ export function updateLayout(active?: DockedPanel): void {
       if (other !== active && other.side === active.side && other.visible) other.setVisible(false);
     }
   }
-  const workspace = requireElement('.workspace');
+  const workspace = requireElement('#workspace-grid');
   const span = getBottomPanelSpan();
   const left = span === 'left' || span === 'full';
   const right = span === 'right' || span === 'full';

@@ -3,7 +3,7 @@
   /* グラフの座標とコミットの行はこの高さを共有する。UI の文字サイズの変更には連動させない。 */
   --spacing-git-log-row: 32px;
   --color-shadow: #00000066;
-  --color-canvas: #11151b;
+  --color-canvas: #0e1218;
   --color-background: #1e222a;
   --color-surface: #171b22;
   --color-surface-raised: #242831;
@@ -25,6 +25,10 @@
   --color-warning: #e6b07e;
   --color-modified: #78bfff;
   --color-untracked: #f0808b;
+  --color-git-ignored: #929aa8;
+  --color-git-ignored-surface: #252a32;
+  --color-analysis-excluded: #bda2dc;
+  --color-analysis-excluded-surface: #302a3c;
   --color-deleted: #9aa8bc;
   --color-inverse: #f0f2f6;
   --color-inverse-foreground: #191c23;

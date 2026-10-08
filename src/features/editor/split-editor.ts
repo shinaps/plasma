@@ -4,6 +4,9 @@ import { createFileTabs } from './file-tabs';
 import { registerWrapping } from './wrapping';
 
 export type SplitDirection = 'right' | 'down';
+type SplitTab =
+  | { model: monaco.editor.ITextModel; view?: never; label?: never; settings?: never }
+  | { model?: never; view: HTMLElement; label: string; settings?: boolean };
 
 /** 2 つ目のエディタ。モデルは DocumentStore と共有し、ここでは寿命を持たない。 */
 export class SplitEditor {
@@ -15,7 +18,8 @@ export class SplitEditor {
   private readonly separator = document.createElement('div');
   private readonly tabs = document.createElement('div');
   private readonly host = document.createElement('div');
-  private readonly models = new Map<string, monaco.editor.ITextModel>();
+  private readonly entries = new Map<string, SplitTab>();
+  private readonly surface: HTMLElement;
   private direction: SplitDirection = 'right';
   private ratio = 50;
   private active = '';
@@ -89,29 +93,59 @@ export class SplitEditor {
     toolbar.className = 'flex shrink-0 items-center gap-1';
     this.toggleWrapping = registerWrapping(this.editor);
     header.append(toolbar);
-    attachDocumentPreview(this.editor, this.host, toolbar);
+    this.surface = attachDocumentPreview(this.editor, this.host, toolbar);
     this.renderTabs = createFileTabs(this.tabs);
     this.render();
   }
   get path(): string {
     return this.active;
   }
-  open(path: string, model: monaco.editor.ITextModel, direction = this.direction): void {
+  /**
+   * @param viewState 移動元のエディタで保存した表示状態。選択とスクロール位置を引き継ぐ
+   */
+  open(
+    path: string,
+    model: monaco.editor.ITextModel,
+    direction = this.direction,
+    viewState?: monaco.editor.ICodeEditorViewState | null,
+  ): void {
     this.direction = direction;
-    this.models.set(path, model);
+    this.entries.set(path, { model });
     this.active = path;
     this.render();
+    if (viewState) {
+      // 隠れていたペインは自動レイアウトがまだ届かず高さ 0 のため、先に寸法を確定しないとスクロール位置が 0 に丸められる。
+      this.editor.layout();
+      this.editor.restoreViewState(viewState);
+    }
     this.editor.focus();
   }
+  openSettingsView(id: string, view: HTMLElement, label: string, direction = this.direction): void {
+    this.entries.set(id, { view, label, settings: true });
+    this.pane.append(view);
+    this.activate(id, direction);
+  }
+  private activate(id: string, direction = this.direction): void {
+    this.direction = direction;
+    this.active = id;
+    this.render();
+    const entry = this.entries.get(id);
+    if (entry?.view)
+      entry.view.querySelector<HTMLElement>('[role=tab][aria-selected=true], input')?.focus();
+    else this.editor.focus();
+  }
   close(path = this.active): void {
-    this.models.delete(path);
-    if (path === this.active) this.active = [...this.models.keys()].at(-1) ?? '';
+    const entry = this.entries.get(path);
+    if (entry?.view) entry.view.hidden = true;
+    this.entries.delete(path);
+    if (path === this.active) this.active = [...this.entries.keys()].at(-1) ?? '';
     // 空になったら向きを既定に戻す。ドラッグ中の表示 (右半分) と置き先を一致させるため。
-    if (!this.models.size) this.direction = 'right';
+    if (!this.entries.size) this.direction = 'right';
     this.render();
   }
   clear(): void {
-    this.models.clear();
+    for (const entry of this.entries.values()) if (entry.view) entry.view.hidden = true;
+    this.entries.clear();
     this.active = '';
     this.direction = 'right';
     this.render();
@@ -132,23 +166,28 @@ export class SplitEditor {
   private render(): void {
     this.applyLayout();
     this.pane.hidden = this.separator.hidden = !this.active;
-    this.editor.setModel(this.models.get(this.active) ?? null);
+    this.editor.setModel(this.entries.get(this.active)?.model ?? null);
+    this.surface.hidden = !!this.entries.get(this.active)?.view;
+    for (const [id, entry] of this.entries) if (entry.view) entry.view.hidden = id !== this.active;
     this.renderTabs(
-      [...this.models].map(([path, model]) => ({
+      [...this.entries].map(([path, entry]) => ({
         id: path,
-        title: path,
-        label: path.split('/').at(-1) ?? path,
+        title: entry.label ?? path,
+        label: entry.label ?? path.split('/').at(-1) ?? path,
+        settings: entry.settings,
         active: path === this.active,
-        open: () => this.open(path, model),
+        open: () => this.activate(path),
         close: () => this.onClose(path),
         group: 'right',
-        split: (direction) => this.open(path, model, direction),
+        split: (direction) => this.activate(path, direction),
         closeAll: () => this.onCloseTabs(),
         closeOthers: () => this.onCloseTabs(path),
-        wrap: () => {
-          this.open(path, model);
-          this.toggleWrapping();
-        },
+        wrap: entry.model
+          ? () => {
+              this.activate(path);
+              this.toggleWrapping();
+            }
+          : undefined,
       })),
     );
   }

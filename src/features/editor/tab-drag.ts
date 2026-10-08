@@ -18,7 +18,12 @@ export function configureTabDrag(
   rightPane = rightPaneElement;
   onDrop = dropHandler;
 }
-export function startTabDrag(event: PointerEvent, path: string, source: EditorGroup): void {
+export function startTabDrag(
+  event: PointerEvent,
+  path: string,
+  source: EditorGroup,
+  title = path.split('/').at(-1) ?? path,
+): void {
   if (event.button !== 0) return;
   const origin = { x: event.clientX, y: event.clientY };
   let dragging = false;
@@ -29,7 +34,7 @@ export function startTabDrag(event: PointerEvent, path: string, source: EditorGr
   const label = document.createElement('div');
   label.className =
     'pointer-events-none fixed z-[60] max-w-xs truncate rounded-control bg-popover px-3 py-2 text-caption text-popover-foreground shadow-popover';
-  label.textContent = path.split('/').at(-1) ?? path;
+  label.textContent = title;
   label.hidden = true;
   document.body.append(preview, label);
   const move = (moveEvent: PointerEvent): void => {

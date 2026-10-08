@@ -1,6 +1,8 @@
 import type { OpenAIExtensions } from '@openai/mcp-extensions/app';
 import * as monaco from 'monaco-editor/editor/editor.api';
 import { errorMessage } from '../../../shared/errors.ts';
+import { buttonHtml } from '../../components/ui/button';
+import { createTextarea } from '../../components/ui/textarea';
 import { requireElement } from '../../lib/dom';
 import type { Report } from '../../lib/report';
 import {
@@ -42,19 +44,27 @@ export class Annotations {
     this.report = options.report;
     this.pasteTerminal = options.pasteTerminal;
     this.sharing = new SelectionShare({ extensions: options.extensions, report: options.report });
+    // annotation-panel はキーボードショートカットの除外判定 (Cmd+W など) から参照する。
     this.panel.className =
-      'absolute z-20 w-96 max-w-full rounded-control border border-border bg-surface p-2 text-caption shadow-popover';
+      'annotation-panel absolute z-20 w-96 max-w-full rounded-control border border-border bg-surface p-2 text-caption shadow-popover';
     this.panel.hidden = true;
     this.panel.setAttribute('aria-label', 'Code annotation');
-    this.panel.innerHTML =
-      '<div class="flex items-center gap-2 pt-1 pb-2 [&_strong]:flex-1 [&_strong]:truncate [&_strong]:text-caption"><strong></strong></div><textarea class="w-full min-h-14 max-h-48 resize-none overflow-y-auto rounded-control border border-input bg-background p-2 font-sans text-caption leading-relaxed text-foreground focus:outline-1 focus:outline-ring" aria-label="Comment" placeholder="Ask about this code…" rows="2"></textarea><div class="mt-1 flex flex-wrap items-center justify-end gap-2 [&_button]:rounded-control [&_button]:px-2.5 [&_button]:py-1.5 [&_button]:whitespace-nowrap"><button class="annotation-copy" title="Copy Reference">Copy</button><button class="annotation-terminal" title="Paste reference and comment without executing">Send to Terminal</button><button class="annotation-send bg-accent" title="Send to Chat">Send</button></div>';
+    this.panel.innerHTML = `<div class="flex items-center gap-2 pt-1 pb-2 [&_strong]:flex-1 [&_strong]:truncate [&_strong]:text-caption"><strong></strong></div><div class="annotation-field"></div><div class="mt-1 flex flex-wrap items-center justify-end gap-2 [&_button]:rounded-control [&_button]:px-2.5 [&_button]:py-1.5 [&_button]:whitespace-nowrap">${buttonHtml({ className: 'annotation-copy', attributes: { title: 'Copy Reference' } }, 'Copy')}${buttonHtml({ className: 'annotation-terminal', attributes: { title: 'Paste reference and comment without executing' } }, 'Send to Terminal')}${buttonHtml({ variant: 'secondary', size: 'sm', className: 'annotation-send', attributes: { title: 'Send to Chat' } }, 'Send')}</div>`;
     this.host.append(this.panel);
-    this.comment = requireElement('textarea', this.panel);
+    this.comment = createTextarea(
+      'min-h-14 max-h-48 resize-none overflow-y-auto p-2 text-caption leading-relaxed',
+    );
+    this.comment.setAttribute('aria-label', 'Comment');
+    this.comment.placeholder = 'Ask about this code…';
+    this.comment.rows = 2;
+    requireElement('.annotation-field', this.panel).replaceWith(this.comment);
     this.send = requireElement('.annotation-send', this.panel);
+    // 外側のクリックは欄を隠すだけで、書きかけと対象は保つ (コードを見に行って戻れる)。破棄は Escape で明示する。
     document.addEventListener(
       'pointerdown',
       (event) => {
-        if (!this.panel.hidden && !this.panel.contains(event.target as Node)) this.close();
+        if (!this.panel.hidden && !this.panel.contains(event.target as Node))
+          this.panel.hidden = true;
       },
       true,
     );
@@ -178,6 +188,10 @@ export class Annotations {
     });
     return { refresh };
   }
+  shareFile(reference: Reference): void {
+    this.current = { ...reference, startLine: 1, endLine: 1, selected: false };
+    this.sharing.update(this.current);
+  }
   clear(): void {
     this.current = undefined;
     if (!this.comment.value.trim()) this.close();
@@ -189,6 +203,9 @@ export class Annotations {
   private begin(): void {
     if (this.sending || !this.current || !this.current.selected) return;
     // 対象を書き始めた時点で固定する。画面遷移で書きかけの注釈の対象が変わらない。
+    // 隠しただけの書きかけは同じ対象なら戻し、別の対象を選び直したときだけ捨てる。
+    if (this.draft && JSON.stringify(this.draft) !== JSON.stringify(this.current))
+      this.comment.value = '';
     this.draft = { ...this.current };
     requireElement('strong', this.panel).textContent =
       `${this.draft.path.split('/').at(-1)}:${this.draft.startLine}${this.draft.endLine === this.draft.startLine ? '' : `–${this.draft.endLine}`}`;

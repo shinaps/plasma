@@ -1,5 +1,6 @@
 import type { GitEntry, GitKind } from '../../../shared/protocol.ts';
 import { type TreeRow, TreeView } from '../../components/tree-view';
+import { Checkbox } from '../../components/ui/checkbox';
 import { renderReact } from '../../lib/react-view';
 
 type Node = {
@@ -29,20 +30,35 @@ export class GitTree {
   private readonly collapsed = new Set<string>();
   private projectRevision = 0;
   private readonly seen = new Set<string>();
+  private readonly checked = new Set<string>();
+  partialPaths = new Set<string>();
+  private readonly onChecked?: (paths: string[], changed?: string[]) => void;
   private selected = '';
+  private reveal?: { id: string; revision: number };
   private selectedFolder?: string;
   private available = false;
   private rows: TreeRow[] = [];
-  constructor(element: HTMLElement, open: (path: string) => void) {
+  /**
+   * @param open ファイルの差分を開く
+   * @param onChecked paths は今チェックされているファイル、changed はチェックボックスで状態を変えたファイル (行単位の選択を解除する対象)
+   */
+  constructor(
+    element: HTMLElement,
+    open: (path: string) => void,
+    onChecked?: (paths: string[], changed?: string[]) => void,
+  ) {
     this.element = element;
     this.open = open;
+    this.onChecked = onChecked;
   }
   reset(): void {
     this.selectedFolder = undefined;
+    this.checked.clear();
     this.collapsed.clear();
     this.seen.clear();
     this.projectRevision++;
     this.selected = '';
+    this.reveal = undefined;
     this.rows = [];
   }
   expandSelected(): void {
@@ -117,9 +133,8 @@ export class GitTree {
         parentId: parentKey,
         path: node.path,
         label: name,
-        title: node.entry?.oldPath
-          ? `${node.path} (renamed from ${node.entry.oldPath})`
-          : undefined,
+        description: node.entry ? relocationLabel(node.entry) : undefined,
+        title: node.entry?.oldPath ? `${node.path} (${relocationLabel(node.entry)})` : undefined,
         level,
         group,
         expanded: node.entry ? undefined : expanded,
@@ -138,10 +153,27 @@ export class GitTree {
           });
     };
     for (const group of groups.filter((candidate) => candidate.count)) visit(group, 1, '', true);
+    if (selectedKey && selected !== this.selected) {
+      // 差分の上下移動もツリーの選択に反映する。通常の再取得では手動選択を維持する。
+      this.reveal = { id: selectedKey, revision: (this.reveal?.revision ?? 0) + 1 };
+      this.selectedFolder = undefined;
+    }
     this.selected = selected;
     this.available = available;
     this.rows = rows;
+    for (const path of this.checked)
+      if (!entries.some((entry) => entry.path === path)) this.checked.delete(path);
+    this.onChecked?.([...this.checked]);
     this.render();
+  }
+  setChecked(path: string, checked: boolean): void {
+    if (checked) this.checked.add(path);
+    else this.checked.delete(path);
+    this.onChecked?.([...this.checked]);
+    this.render();
+  }
+  get filePaths(): string[] {
+    return this.rows.filter((row) => row.expanded === undefined).map((row) => row.path);
   }
   private render(): void {
     const hidden = new Set<string>();
@@ -157,7 +189,37 @@ export class GitTree {
         key={this.projectRevision}
         label="Changed files"
         rows={rows}
+        reveal={this.reveal}
         emptyMessage={this.available ? 'No changes' : 'Not a Git repository'}
+        renderControl={(row) => {
+          if (!this.onChecked) return null;
+          const paths = this.rows
+            .filter(
+              (candidate) =>
+                candidate.expanded === undefined &&
+                (candidate.id === row.id || candidate.id.startsWith(`${row.id}/`)),
+            )
+            .map((candidate) => candidate.path);
+          const count = paths.filter((path) => this.checked.has(path)).length;
+          return (
+            <TreeCheckbox
+              label={`Include ${row.label} in commit`}
+              checked={count === paths.length}
+              mixed={
+                (count > 0 && count < paths.length) ||
+                paths.some((path) => this.partialPaths.has(path))
+              }
+              onChange={(checked) => {
+                for (const path of paths) {
+                  if (checked) this.checked.add(path);
+                  else this.checked.delete(path);
+                }
+                this.onChecked?.([...this.checked], paths);
+                this.render();
+              }}
+            />
+          );
+        }}
         onSelect={(row) => {
           this.selectedFolder = row.expanded === undefined ? undefined : row.id;
         }}
@@ -172,4 +234,47 @@ export class GitTree {
       />,
     );
   }
+}
+
+function TreeCheckbox({
+  label,
+  checked,
+  mixed,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  mixed: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <Checkbox
+      aria-label={label}
+      checked={mixed ? 'indeterminate' : checked}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+      onCheckedChange={(value) => onChange(value === true)}
+      className="m-0"
+    />
+  );
+}
+
+/** 移動元は移動先フォルダ基準で示し、共通の長い親パスでファイル名を押し出さない。 */
+function relocationLabel(entry: GitEntry): string | undefined {
+  if (!entry.oldPath) return undefined;
+  const before = entry.oldPath.split('/');
+  const after = entry.repoPath.split('/');
+  const oldName = before.pop();
+  const newName = after.pop();
+  const moved = before.join('/') !== after.join('/');
+  if (!moved) return `renamed from ${oldName}`;
+  while (before.length && after.length && before[0] === after[0]) {
+    before.shift();
+    after.shift();
+  }
+  const source = [...after.map(() => '..'), ...before].join('/') || '.';
+  return oldName === newName
+    ? `moved from ${source}/`
+    : `moved and renamed from ${source}/${oldName}`;
 }

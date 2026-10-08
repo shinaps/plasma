@@ -1,6 +1,8 @@
 import * as monaco from 'monaco-editor/editor/editor.api';
+import { createElement } from 'react';
 import type { Appearance } from '../../shared/appearance.ts';
 import { errorMessage } from '../../shared/errors.ts';
+import { isExcludedPath } from '../../shared/explorer-settings.ts';
 import { type FileTarget, parseFileRoute } from '../../shared/file-route.ts';
 import { imageType } from '../../shared/image-types.ts';
 import { isSource, languageFor, semanticLanguages } from '../../shared/language.ts';
@@ -11,6 +13,9 @@ import {
   type Location,
   type WorkspaceInfo,
 } from '../../shared/protocol.ts';
+import { confirmDialog, fileDialog } from '../components/file-dialog';
+import { createButton } from '../components/ui/button';
+import { attachCodeNavigation } from '../features/editor/code-navigation';
 import { attachDocumentPreview } from '../features/editor/document-preview';
 import { DocumentStore, isDirty } from '../features/editor/documents';
 import { createFileTabs } from '../features/editor/file-tabs';
@@ -22,24 +27,29 @@ import { registerWrapping } from '../features/editor/wrapping';
 import { showGitHistory } from '../features/git/git-history';
 import { ToolDock } from '../features/layout/tool-dock';
 import { openProject } from '../features/projects/open-project';
+import { WorkspaceHeader } from '../features/projects/workspace-header';
 import { applyFontSizeTokens } from '../features/settings/font-sizes';
 import { requireElement } from '../lib/dom';
-import { unmountReact } from '../lib/react-view';
+import { renderReact, unmountReact } from '../lib/react-view';
 import { rendererTheme } from '../styles/renderer-theme';
 import { Connection } from './connection';
 import { mountWorkspace } from './workspace-shell';
 import 'monaco-editor/editor/contrib/hover/browser/hoverContribution';
 import 'monaco-editor/editor/contrib/find/browser/findController';
+import 'monaco-editor/editor/contrib/linesOperations/browser/linesOperations';
 import 'monaco-editor/editor/contrib/contextmenu/browser/contextmenu';
 import 'monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands';
+// Peek Definition のウィジェットは standalone 用の contribution が登録して初めて開く。無いとメニューの項目が何もしない。
+import 'monaco-editor/editor/standalone/browser/referenceSearch/standaloneReferenceSearch';
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker&inline';
 import '../styles/globals.css';
 import { Annotations } from '../features/editor/annotations';
 import { setupHighlighting } from '../features/editor/highlighting';
+import type { ExplorerAction } from '../features/explorer/explorer-menu';
 import { FileTree } from '../features/explorer/file-tree';
 import { GitPanel } from '../features/git/git-panel';
 import { chooseProject } from '../features/projects/project-picker';
-import { openSettings } from '../features/settings/settings';
+import { openSettings, updateSettingsView } from '../features/settings/settings';
 import { TerminalPanel } from '../features/terminal/terminal';
 
 type MainView = 'editor' | 'diff' | 'settings';
@@ -58,10 +68,22 @@ const sidebarWidth = { min: 150, max: 440 };
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 const byId = <T extends HTMLElement = HTMLElement>(id: string): T => requireElement<T>(`#${id}`);
 mountWorkspace();
+// macOS の Delete は Backspace。Monaco 標準の行削除に結び、Undo と複数カーソルも共通に扱う。
+if (/Mac/.test(navigator.platform))
+  monaco.editor.addKeybindingRule({
+    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backspace,
+    command: 'editor.action.deleteLines',
+    when: 'editorTextFocus && !editorReadonly',
+  });
 
 const connection = new Connection(() => workspaceRoot);
 const request = connection.request;
-const store = new DocumentStore(request, () => {
+const store = new DocumentStore(request, (path) => {
+  // 定義のプレビュー (Peek) で読み込んだだけの文書も、編集されたら保存・破棄・競合の対象にするためタブとして開く。
+  if (!opened.has(path)) {
+    opened.add(path);
+    rightOnly.delete(path);
+  }
   diagnosticGeneration++;
   renderTabs();
   clearTimeout(checkingTimer);
@@ -74,6 +96,10 @@ const rightOnly = new Set<string>();
 let workspaceRoot = '';
 let navigationGeneration = 0;
 let settingsOpened = false;
+let settingsGroup: EditorGroup = 'left';
+// ファイルパスにはヌル文字が入らないので、どのタブのパスとも重ならない。
+const settingsTabId = '\0settings';
+const settingsHome = requireElement('main');
 let mainView: MainView = 'editor';
 let disposeSettings: (() => void) | undefined;
 let active = '';
@@ -81,7 +107,7 @@ let fileNames: string[] = [];
 let diagnosticGeneration = 0;
 let checkingTimer: ReturnType<typeof setTimeout>;
 let polling = false;
-let refreshingGit = false;
+let gitRefresh: Promise<void> | undefined;
 let choosingProject = true;
 let historyStack: { path: string; position: monaco.IPosition }[] = [];
 let noticeTimer: ReturnType<typeof setTimeout>;
@@ -90,15 +116,11 @@ const notice = (message = '', error = false): void => {
   if (error && requireElement<HTMLElement>('.workspace').hidden) {
     const fallback = byId('global-notice');
     fallback.hidden = false;
-    fallback.textContent = message;
-    const retry = document.createElement('button');
-    retry.textContent = 'Reload';
-    retry.onclick = () => location.reload();
-    fallback.append(retry);
+    byId('global-notice-message').textContent = message;
     return;
   }
   byId('global-notice').hidden = true;
-  byId('notice').textContent = message;
+  byId('notice-message').textContent = message;
   byId('notice').hidden = !message;
   byId('notice').classList.toggle('error', error);
   byId('notice').setAttribute('role', error ? 'alert' : 'status');
@@ -107,11 +129,28 @@ const notice = (message = '', error = false): void => {
       byId('notice').hidden = true;
     }, 5000);
 };
+byId('notice-close').onclick = () => notice();
+byId('global-notice-close').onclick = () => notice();
+
 /** 例外を通知に変換する入口。Error 以外や空のメッセージでも何かが表示される。 */
 const reportError = (error: unknown): void => notice(errorMessage(error), true);
 const safely = (task: () => Promise<unknown>) => (): void => {
   void task().catch(reportError);
 };
+
+// 埋め込みの文書を再読み込みするとホストとの接続も失われるため、既存の画面内で復帰する。
+byId('global-notice-reload').textContent = 'Back to Projects';
+byId('global-notice-reload').onclick = safely(async () => {
+  const picker = document.querySelector<HTMLElement>('[data-project-picker]');
+  if (picker) {
+    notice();
+    picker.querySelector<HTMLButtonElement>('button')?.focus();
+    return;
+  }
+  if (store.hasDirty() && !(await confirmDialog('Discard unsaved changes and return to projects?')))
+    return;
+  await openProjectPicker();
+});
 
 const appearance = rendererTheme();
 // テーマ「workbench」はまだ登録されていない。start() で setupHighlighting が登録するまでワークスペースを表示しないので、
@@ -134,12 +173,25 @@ const editorOptions: monaco.editor.IStandaloneEditorConstructionOptions = {
 };
 const editor = monaco.editor.create(byId('editor'), editorOptions);
 const toggleWrapping = registerWrapping(editor);
+attachCodeNavigation(
+  editor,
+  byId('editor'),
+  request,
+  () => active,
+  (path) => {
+    showTool(false);
+    requireElement<HTMLInputElement>('#filter').value = '';
+    tree.search('');
+    tree.reveal(path);
+  },
+);
 attachDocumentPreview(editor, byId('editor'), requireElement('.toolbar')).id = 'editor-area';
 const splitEditor = new SplitEditor(
   requireElement('.editor-stack'),
   editorOptions,
   (path) => {
-    if (rightOnly.has(path)) void closeDocument(path).catch(reportError);
+    if (path === settingsTabId) closeSettings();
+    else if (rightOnly.has(path)) void closeDocument(path).catch(reportError);
     else splitEditor.close(path);
   },
   (except) => void closeTabs(except).catch(reportError),
@@ -152,6 +204,10 @@ async function moveEditorTab(
   source: EditorGroup,
   target: EditorGroup,
 ): Promise<void> {
+  if (path === settingsTabId) {
+    moveSettings(target);
+    return;
+  }
   const openDocument = documents.get(path);
   if (!openDocument) return;
   if (target === 'right') {
@@ -160,7 +216,8 @@ async function moveEditorTab(
     const index = paths.indexOf(path);
     const next = paths[index + 1] ?? paths[index - 1];
     rightOnly.add(path);
-    splitEditor.open(path, openDocument.model);
+    if (active === path) openDocument.viewState = editor.saveViewState();
+    splitEditor.open(path, openDocument.model, undefined, openDocument.viewState);
     if (active === path) {
       active = '';
       editor.setModel(null);
@@ -188,9 +245,204 @@ const editorSelection = annotations.bind(editor, () =>
 annotations.bind(splitEditor.editor, () =>
   splitEditor.path ? { root: workspaceRoot, path: splitEditor.path } : undefined,
 );
-const tree = new FileTree(byId('files'), (path) => {
-  void open(path).catch(reportError);
-});
+const tree = new FileTree(
+  byId('files'),
+  (path) => {
+    void open(path).catch(reportError);
+  },
+  (path, directory, include) => {
+    void (async () => {
+      const settings = await request({ op: 'settings-get' });
+      const matching = settings.analysisExcludedPaths.filter((entry) =>
+        isExcludedPath(path, directory, [entry]),
+      );
+      // 親や全階層のルールを解除する場合は、選択項目以外にも影響することを伝える。
+      if (
+        include &&
+        matching.some(
+          (entry) => entry !== `./${path}` && !(entry.includes('/') && entry === path),
+        ) &&
+        (await fileDialog({
+          title: 'Include in Analysis',
+          description: `Remove these exclusion rules?\n\n${matching.join('\n')}\n\nOther files covered by these rules will also be included.`,
+          accept: 'Include in Analysis',
+        })) === undefined
+      )
+        return;
+      const updated = await request({
+        op: 'settings-set',
+        analysisExcludedPaths: include
+          ? settings.analysisExcludedPaths.filter((entry) => !matching.includes(entry))
+          : [...new Set([...settings.analysisExcludedPaths, `./${path}`])],
+      });
+      updateSettingsView(updated);
+      await refresh();
+      await refreshDiagnostics();
+      notice(
+        include ? 'Included in analysis.' : 'Excluded from analysis. Still available in Project.',
+      );
+    })().catch(reportError);
+  },
+  (action, path, directory) => {
+    void explorerAction(action, path, directory).catch(reportError);
+  },
+  (recursive) => {
+    if (choosingProject) return;
+    void refresh(false, recursive).catch(reportError);
+  },
+);
+type FileClipboard = { path: string; move: boolean };
+let fileClipboard: FileClipboard | undefined;
+let changingFiles = false;
+const withinEntry = (entry: string, candidate: string): boolean =>
+  !entry || candidate === entry || candidate.startsWith(`${entry}/`);
+const parentPath = (path: string): string => path.split('/').slice(0, -1).join('/');
+const childPath = (parent: string, name: string): string => (parent ? `${parent}/${name}` : name);
+
+async function explorerAction(
+  action: ExplorerAction,
+  path: string,
+  directory: boolean,
+): Promise<void> {
+  if (changingFiles || choosingProject) return;
+  if (action === 'absolute-path' || action === 'relative-path' || action === 'file-name') {
+    const value =
+      action === 'absolute-path'
+        ? childPath(workspaceRoot, path).replace(/\/$/, '')
+        : action === 'relative-path'
+          ? path || '.'
+          : ((path || workspaceRoot).split('/').at(-1) ?? '');
+    await navigator.clipboard.writeText(value);
+    notice(`Copied: ${value}`);
+    return;
+  }
+  if (action === 'cut' || action === 'copy') {
+    fileClipboard = { path, move: action === 'cut' };
+    tree.setClipboard(true);
+    notice(
+      `${action === 'cut' ? 'Cut' : 'Copied'} ${path}. Choose a destination folder and Paste.`,
+    );
+    return;
+  }
+  if (action === 'diff') {
+    await gitPanel.open(path);
+    return;
+  }
+  // 応答待ちの間も編集できると、移動後に古いパスのバッファが残る。操作完了までワークスペースの入力を止める。
+  changingFiles = true;
+  const shell = requireElement<HTMLElement>('.workspace');
+  shell.inert = true;
+  let focusPath = path;
+  let focusEditor = false;
+  let reopenPath = '';
+  try {
+    const folder = directory ? path : parentPath(path);
+    let destination = '';
+    const clipboard = fileClipboard;
+    if (action === 'new-file' || action === 'new-directory' || action === 'rename') {
+      const name = await fileDialog({
+        title:
+          action === 'rename' ? 'Rename' : action === 'new-file' ? 'New File' : 'New Directory',
+        description: action === 'rename' ? path : `In ${folder || workspaceRoot}`,
+        initialName: action === 'rename' ? (path.split('/').at(-1) ?? '') : '',
+        accept: action === 'rename' ? 'Rename' : 'Create',
+      });
+      if (name === undefined) return;
+      if (!name || name === '.' || name === '..' || /[/\\]/.test(name))
+        throw new Error('Enter a single file or directory name.');
+      destination = childPath(action === 'rename' ? parentPath(path) : folder, name);
+      if (action === 'rename' && destination === path) return;
+    } else if (action === 'paste') {
+      if (!clipboard) return;
+      destination = childPath(folder, clipboard.path.split('/').at(-1) ?? '');
+    }
+    const source = action === 'paste' ? (clipboard?.path ?? path) : path;
+    const affected = (): string[] =>
+      [...documents.keys()].filter((candidate) => withinEntry(source, candidate));
+    if (
+      action === 'delete' &&
+      (await fileDialog({
+        title: 'Permanently Delete',
+        description: `Delete "${path}"${directory ? ' and all its contents' : ''}? This cannot be undone.`,
+        accept: 'Delete Permanently',
+      })) === undefined
+    )
+      return;
+    if (
+      action === 'reload' &&
+      hasUnsavedChanges(affected()) &&
+      (await fileDialog({
+        title: 'Reload from Disk',
+        description: 'Discard unsaved changes in the selected file or folder?',
+        accept: 'Discard and Reload',
+      })) === undefined
+    )
+      return;
+
+    await connection.settle();
+    if (action === 'reload') {
+      for (const candidate of affected()) await store.reload(candidate);
+      if (!directory && !documents.has(path)) await open(path);
+      else if (imagePaths.has(active) && withinEntry(path, active)) await open(active);
+    } else {
+      if (action !== 'new-file' && action !== 'new-directory' && hasUnsavedChanges(affected()))
+        throw new Error('Save the files in this selection before changing or copying them.');
+      const removesSource =
+        action === 'rename' || action === 'delete' || (action === 'paste' && clipboard?.move);
+      if (action === 'new-file' || action === 'new-directory') {
+        await request({
+          op: 'file-create',
+          path: destination,
+          directory: action === 'new-directory',
+        });
+      } else if (action === 'delete') await request({ op: 'file-delete', path });
+      else
+        await request({
+          op: 'file-transfer',
+          path: source,
+          destination,
+          move: action === 'rename' || !!clipboard?.move,
+        });
+      if (removesSource) {
+        if (action !== 'delete' && active && withinEntry(source, active))
+          reopenPath = destination + active.slice(source.length);
+        navigationGeneration++;
+        const previousFile = localStorage.getItem(`code-file:${workspaceRoot}`);
+        if (previousFile && withinEntry(source, previousFile))
+          localStorage.removeItem(`code-file:${workspaceRoot}`);
+        for (const candidate of new Set([...opened, ...documents.keys()])) {
+          if (withinEntry(source, candidate)) removeTab(candidate);
+        }
+        recentFiles = recentFiles.filter((candidate) => !withinEntry(source, candidate));
+        historyStack = historyStack.filter((entry) => !withinEntry(source, entry.path));
+        if (fileClipboard && withinEntry(source, fileClipboard.path)) {
+          fileClipboard = undefined;
+          tree.setClipboard(false);
+        }
+      }
+    }
+    await refresh();
+    await refreshDiagnostics();
+    renderTabs();
+    if (reopenPath || action === 'new-file' || (action === 'rename' && !directory)) {
+      await open(reopenPath || destination);
+      focusEditor = true;
+    } else if (destination) {
+      tree.reveal(destination);
+      focusPath = destination;
+    }
+    notice(action === 'reload' ? 'Reloaded from disk.' : 'Project files updated.');
+  } finally {
+    shell.inert = false;
+    changingFiles = false;
+    if (focusEditor) editor.focus();
+    else
+      byId('files')
+        .querySelector<HTMLElement>(`[data-path="${CSS.escape(focusPath)}"]`)
+        ?.focus();
+  }
+}
+
 function renderFiles(): void {
   tree.reveal(active);
 }
@@ -215,7 +467,14 @@ function renderTabs(): void {
       close: safely(() => closeDocument(path)),
       draggable: !!openDocument,
       split: openDocument
-        ? (direction: SplitDirection) => splitEditor.open(path, openDocument.model, direction)
+        ? (direction: SplitDirection) =>
+            // 表示中の文書は今の選択・スクロールを、他は最後に表示していた状態を右側へ引き継ぐ。
+            splitEditor.open(
+              path,
+              openDocument.model,
+              direction,
+              active === path ? editor.saveViewState() : openDocument.viewState,
+            )
         : undefined,
       wrap: openDocument
         ? safely(async () => {
@@ -225,15 +484,16 @@ function renderTabs(): void {
         : undefined,
     };
   });
-  if (settingsOpened)
+  if (settingsOpened && settingsGroup === 'left')
     tabs.push({
-      id: 'settings',
+      id: settingsTabId,
       title: 'Settings',
       label: 'Settings',
       active: mainView === 'settings',
       settings: true,
       open: safely(showSettings),
       close: closeSettings,
+      split: (direction) => moveSettings('right', direction),
     });
   renderFileTabs(
     tabs.map((tab) => ({
@@ -252,8 +512,10 @@ function renderTabs(): void {
   const activeDocument = documents.get(active);
   const anyDirty = store.hasDirty();
   byId('save').hidden = !anyDirty;
-  byId<HTMLButtonElement>('save').disabled =
-    !anyDirty || [...documents.values()].some((candidate) => candidate.conflict);
+  // 競合した文書は保存時にサーバーが拒否して知らせる。他の文書の保存までは止めない。
+  byId<HTMLButtonElement>('save').disabled = ![...documents.values()].some(
+    (candidate) => isDirty(candidate) && !candidate.conflict,
+  );
   byId('reload').hidden = !activeDocument || (!isDirty(activeDocument) && !activeDocument.conflict);
 }
 /** パスごとに閉じた回数。読み込み中の open() が、その間に閉じられたタブを開き直さないために使う。 */
@@ -275,6 +537,7 @@ function removeTab(path: string): void {
   gitPanel.release(path);
   splitEditor.close(path);
   store.close(path);
+  markerScopes.delete(path);
   renderTabs();
 }
 function hasUnsavedChanges(paths: Iterable<string>): boolean {
@@ -285,10 +548,14 @@ function hasUnsavedChanges(paths: Iterable<string>): boolean {
 }
 async function closeTabs(except?: string): Promise<void> {
   const paths = [...opened].filter((path) => path !== except);
-  if (hasUnsavedChanges(paths) && !confirm('Discard unsaved changes and close these tabs?')) return;
+  if (
+    hasUnsavedChanges(paths) &&
+    !(await confirmDialog('Discard unsaved changes and close these tabs?'))
+  )
+    return;
   const activeClosed = paths.includes(active);
   for (const path of paths) removeTab(path);
-  if (except === 'settings') setMainView('settings');
+  if (except === settingsTabId) await showSettings();
   else if (settingsOpened) closeSettings();
   // 右の文書を残す「他を閉じる」では左は空のままにする。open() は文書を左へ移すため。
   if (activeClosed && except && opened.has(except) && !rightOnly.has(except))
@@ -299,7 +566,11 @@ async function closeTabs(except?: string): Promise<void> {
 async function closeDocument(path: string): Promise<void> {
   const openDocument = documents.get(path);
   if (!openDocument && !imagePaths.has(path)) return;
-  if (hasUnsavedChanges([path]) && !confirm('Discard unsaved changes and close this tab?')) return;
+  if (
+    hasUnsavedChanges([path]) &&
+    !(await confirmDialog('Discard unsaved changes and close this tab?'))
+  )
+    return;
   // 次に表示するタブは、状態を変える前に決める。
   const paths = [...opened].filter((candidate) => !rightOnly.has(candidate));
   const index = paths.indexOf(path);
@@ -417,9 +688,11 @@ function showPanel(name: string): void {
   }
 }
 function locationButton(location: Location, message: string, prefix = ''): HTMLButtonElement {
-  const button = document.createElement('button');
-  button.className =
-    'flex w-full flex-col items-start rounded-control px-2 py-2 text-left hover:bg-accent [&_strong]:text-caption [&_strong]:font-medium [&_strong]:text-muted-foreground [&_span]:font-mono [&_span]:text-caption [&_span]:whitespace-pre-wrap';
+  const button = createButton({
+    className:
+      'flex w-full flex-col items-start rounded-control px-2 py-2 text-left justify-start hover:bg-accent [&_strong]:text-caption [&_strong]:font-medium [&_strong]:text-muted-foreground [&_span]:font-mono [&_span]:text-caption [&_span]:whitespace-pre-wrap',
+  });
+
   const title = document.createElement('strong');
   title.textContent = `${prefix}${location.path}:${location.line}:${location.column}`;
   const detail = document.createElement('span');
@@ -436,6 +709,8 @@ function showLocations(locations: Location[]): void {
   if (!locations.length) byId('refs').textContent = 'No references found.';
   showPanel('refs');
 }
+/** 文書ごとに、今付いている診断の印を出した tsconfig (診断の scope)。 */
+const markerScopes = new Map<string, string>();
 /** 未保存の本文を同期してから診断を取り直し、Problems パネルとエディタの印を更新する。 */
 async function refreshDiagnostics(): Promise<void> {
   if (choosingProject) return;
@@ -450,7 +725,7 @@ async function refreshDiagnostics(): Promise<void> {
     byId('problems-toggle').classList.remove('text-destructive');
     return;
   }
-  const { diagnostics } = await request({ op: 'diagnostics', path });
+  const { diagnostics, scope } = await request({ op: 'diagnostics', path });
   if (generation !== diagnosticGeneration) return;
   byId('problem-count').textContent = String(diagnostics.length);
   byId('problems-toggle').textContent = diagnostics.length ? `⚠ ${diagnostics.length}` : '✓';
@@ -464,11 +739,17 @@ async function refreshDiagnostics(): Promise<void> {
   const byPath = new Map<string, Diagnostic[]>();
   for (const diagnostic of diagnostics)
     byPath.set(diagnostic.path, [...(byPath.get(diagnostic.path) ?? []), diagnostic]);
-  for (const [path, openDocument] of documents)
+  for (const [path, openDocument] of documents) {
+    const own = byPath.get(path);
+    // 印を更新するのは、この tsconfig の診断に現れた文書と、前回この tsconfig の印を付けた文書だけ。
+    // 別の tsconfig に属する文書の印は、その文書の診断を取るまで残す。
+    if (!own && markerScopes.get(path) !== scope) continue;
+    if (own && scope !== null) markerScopes.set(path, scope);
+    else markerScopes.delete(path);
     monaco.editor.setModelMarkers(
       openDocument.model,
       'typescript',
-      (byPath.get(path) ?? []).map((diagnostic) => ({
+      (own ?? []).map((diagnostic) => ({
         ...range(diagnostic),
         message: diagnostic.message,
         severity:
@@ -478,6 +759,7 @@ async function refreshDiagnostics(): Promise<void> {
         code: String(diagnostic.code),
       })),
     );
+  }
 }
 
 async function saveAll(): Promise<void> {
@@ -540,9 +822,10 @@ const goBack = async (): Promise<void> => {
 byId('save').onclick = safely(saveAll);
 function setMainView(view: MainView): void {
   mainView = view;
+  requireElement('main').dataset.view = view;
   byId('editor-area').hidden = view !== 'editor';
   byId('diff-view').hidden = view !== 'diff';
-  byId('settings-view').hidden = view !== 'settings';
+  if (settingsGroup === 'left') byId('settings-view').hidden = view !== 'settings';
   requireElement<HTMLElement>('.toolbar').hidden = view !== 'editor';
   requireElement('main').classList.toggle('settings-active', view === 'settings');
   if (view !== 'editor') byId('results').hidden = true;
@@ -575,17 +858,49 @@ function applyAppearance(value: Appearance): void {
 async function showSettings(): Promise<void> {
   navigationGeneration++;
   gitPanel.close();
-  setMainView('settings');
+  if (settingsGroup === 'left') setMainView('settings');
+  else splitEditor.openSettingsView(settingsTabId, byId('settings-view'), 'Settings');
   const load = !settingsOpened;
   settingsOpened = true;
   renderTabs();
   if (load)
-    disposeSettings = openSettings(byId('settings-view'), workspaceRoot, request, applyAppearance);
+    disposeSettings = openSettings(
+      byId('settings-view'),
+      workspaceRoot,
+      request,
+      applyAppearance,
+      async () => {
+        await refresh();
+        await refreshDiagnostics();
+      },
+    );
   // 初回は設定画面が自分でフォーカスを移す。2 回目以降の再表示はここで移す。
   byId('settings-view').querySelector<HTMLButtonElement>('[role=tab][data-state=active]')?.focus();
 }
+function moveSettings(group: EditorGroup, direction?: SplitDirection): void {
+  settingsGroup = group;
+  if (group === 'right') {
+    // DOM を移して設定の入力途中の値と選択中のセクションを保つ。
+    splitEditor.openSettingsView(settingsTabId, byId('settings-view'), 'Settings', direction);
+    setMainView('editor');
+  } else {
+    splitEditor.close(settingsTabId);
+    settingsHome.append(byId('settings-view'));
+    setMainView('settings');
+    byId('settings-view')
+      .querySelector<HTMLElement>('[role=tab][aria-selected=true], input')
+      ?.focus();
+  }
+  renderTabs();
+}
 function closeSettings(): void {
   const wasActive = mainView === 'settings';
+  if (settingsGroup === 'right') {
+    splitEditor.close(settingsTabId);
+    settingsHome.append(byId('settings-view'));
+    settingsGroup = 'left';
+  }
+  byId('settings-view').hidden = true;
   settingsOpened = false;
   if (wasActive) setMainView('editor');
   disposeSettings?.();
@@ -594,15 +909,7 @@ function closeSettings(): void {
   if (wasActive) editor.focus();
 }
 byId('settings-tool').onclick = safely(showSettings);
-byId('reload').onclick = safely(async () => {
-  const openDocument = documents.get(active);
-  if (!openDocument) return;
-  if (isDirty(openDocument) && !confirm('Discard unsaved changes and reload from disk?')) return;
-  await store.reload(active);
-  notice();
-  renderTabs();
-  await refreshDiagnostics();
-});
+byId('reload').onclick = safely(() => explorerAction('reload', active, false));
 byId('filter').oninput = () => tree.search(byId<HTMLInputElement>('filter').value);
 const closeResults = (): void => {
   byId('results').hidden = true;
@@ -620,14 +927,23 @@ for (const [tab, panel] of [
   ['refs-tab', 'refs'],
 ])
   byId(tab).onclick = () => showPanel(panel);
-async function refresh(): Promise<WorkspaceInfo> {
-  const data = await request({ op: 'workspace' });
+let workspaceRevision: number | undefined;
+let workspaceRequest = 0;
+async function refresh(revealActive = true, recursive?: string): Promise<WorkspaceInfo> {
+  const version = ++workspaceRequest;
+  const data = await request({
+    op: 'workspace',
+    expanded: tree.expandedPaths,
+    recursive: tree.searching ? '' : recursive,
+  });
+  if (version !== workspaceRequest) return data;
+  workspaceRevision = data.revision;
   fileNames = data.files;
   workspaceRoot = data.root;
-  tree.setProject(data.name);
+  tree.setProject(data.name, data.root);
   document.title = `${data.name} — Plasma`;
-  tree.setFiles(fileNames, data.directories);
-  if (active) tree.reveal(active);
+  tree.setFiles(fileNames, data.directories, data.analysisExcludedPaths, data.symlinks);
+  if (revealActive && active) tree.reveal(active);
   await refreshGit();
   return data;
 }
@@ -655,6 +971,13 @@ const gitPanel = new GitPanel({
   },
   openFile: open,
   save: saveAll,
+  hasUnsaved: hasUnsavedChanges,
+  onCommitted: async () => {
+    // コミット前に始まった取得は古い一覧を返す。その完了を待ってから取り直し、更新済みの一覧で差分を開き直す。
+    await gitRefresh?.catch(() => undefined);
+    await refreshGit();
+    await gitPanel.refreshSelection();
+  },
 });
 let historyOpen = false;
 const historyDock = new ToolDock(
@@ -666,9 +989,11 @@ const historyDock = new ToolDock(
     label: 'Git History',
     initialSide: 'bottom',
     button: byId<HTMLButtonElement>('git-history-tool'),
+    // 他のドックに押し出されて隠れたときも通る。履歴が無いとどのコミットの差分か分からないので、コミットの差分も閉じる。
     onHide: () => {
       historyOpen = false;
       unmountReact(byId('git-history-view'));
+      gitPanel.releaseCommit();
     },
   },
 );
@@ -676,12 +1001,7 @@ function setHistoryOpen(visible: boolean): void {
   historyOpen = visible;
   const host = byId('git-history-view');
   historyDock.setVisible(visible);
-  if (!visible) {
-    unmountReact(host);
-    // 履歴が無いとどのコミットの差分か分からないので、コミットの差分も閉じる。
-    gitPanel.releaseCommit();
-    return;
-  }
+  if (!visible) return;
   showGitHistory(host, {
     root: workspaceRoot,
     request,
@@ -696,27 +1016,60 @@ function setHistoryOpen(visible: boolean): void {
 function showTool(git: boolean): void {
   byId('project-panel').hidden = git;
   byId('git-panel').hidden = !git;
-  byId('panel-title').textContent = git ? 'Changes' : 'Project';
+  byId('panel-title').textContent = git ? 'Git' : 'Project';
   byId('project-tool').classList.toggle('active', !git);
   byId('git-tool').classList.toggle('active', git);
   byId('reveal').hidden = git;
 }
-async function refreshGit(): Promise<void> {
-  // 前回の取得が終わっていなければ重ねない。git status が遅いときに要求が溜まらないようにする。
-  if (refreshingGit) return;
-  refreshingGit = true;
-  try {
+function refreshGit(): Promise<void> {
+  // 前回の取得が終わっていなければ重ねず、その結果を待つ。git status が遅いときに要求が溜まらないようにする。
+  gitRefresh ??= fetchGitStatus().finally(() => {
+    gitRefresh = undefined;
+  });
+  return gitRefresh;
+}
+async function fetchGitStatus(): Promise<void> {
+  {
     const state = await request({ op: 'git-status' });
-    byId('branch').textContent = state.branch;
-    byId('branch').title = state.branch ? `Git branch: ${state.branch}` : '';
+    renderReact(
+      byId('workspace-header'),
+      createElement(WorkspaceHeader, {
+        key: workspaceRoot,
+        root: workspaceRoot,
+        branch: state.branch,
+        request,
+        onProject: async (root) => {
+          if (
+            store.hasDirty() &&
+            !(await confirmDialog('Discard unsaved changes and switch projects?'))
+          )
+            return;
+          await openProjectPicker(undefined, root);
+        },
+        onBranch: async (branch) => {
+          if (store.hasDirty())
+            throw new Error('Save or discard unsaved edits before switching branches.');
+          const shell = requireElement<HTMLElement>('.workspace');
+          changingFiles = true;
+          shell.inert = true;
+          try {
+            await request({ op: 'git-switch', branch });
+            // 切り替え前のモデルや履歴を残さず、同じプロジェクトの新しいディスク状態から再構築する。
+            await openProjectPicker(undefined, workspaceRoot);
+          } finally {
+            shell.inert = false;
+            changingFiles = false;
+          }
+        },
+        report: (message) => notice(message, true),
+      }),
+    );
     byId('git-tool').title = `Git Changes · ${state.entries.length} files`;
     if (JSON.stringify(state) !== JSON.stringify(gitState)) {
       gitState = state;
-      tree.setStatuses(state.entries);
+      tree.setStatuses(state.entries, state.ignoredPaths);
       gitPanel.update(state);
     }
-  } finally {
-    refreshingGit = false;
   }
 }
 byId('project-tool').onclick = () => {
@@ -753,14 +1106,16 @@ window.addEventListener(
     )
       return;
     const target = event.target as HTMLElement;
-    if (target.closest('#terminal-panel,.annotation-panel,input')) return;
+    if (target.closest('#terminal-panel,.annotation-panel,input,textarea')) return;
     // Cmd/Ctrl+W でブラウザのタブが閉じないように既定の動作を止め、他のキーハンドラにも渡さない。
     // ターミナル・注釈・入力欄の中では上で return しているので、その操作には影響しない。
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (splitEditor.editor.hasWidgetFocus()) {
+    if (changingFiles) return;
+    if (splitEditor.pane.contains(target)) {
       const path = splitEditor.path;
-      if (rightOnly.has(path)) void closeDocument(path).catch(reportError);
+      if (path === settingsTabId) closeSettings();
+      else if (rightOnly.has(path)) void closeDocument(path).catch(reportError);
       else splitEditor.close();
       return;
     }
@@ -790,6 +1145,7 @@ function toggleProblems(): void {
 }
 byId('problems-toggle').onclick = toggleProblems;
 window.addEventListener('keydown', (event) => {
+  if (changingFiles || event.defaultPrevented) return;
   if (event.metaKey && event.shiftKey && event.key.toLowerCase() === 'm') {
     event.preventDefault();
     toggleProblems();
@@ -899,10 +1255,21 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 async function poll(): Promise<void> {
-  if (choosingProject || polling || document.hidden) return;
+  if (choosingProject || changingFiles || polling || document.hidden) return;
   polling = true;
   try {
+    const root = workspaceRoot;
+    // 更新前の MCP プロセスは revision を返さない。再起動までは既存の文書監視だけを続ける。
+    const revision =
+      workspaceRevision === undefined
+        ? undefined
+        : (await request({ op: 'workspace-revision' })).revision;
+    if (choosingProject || root !== workspaceRoot) return;
+    const workspaceChanged = revision !== workspaceRevision;
+    // 連続した変更をポーリング間隔でまとめ、選択や折りたたみを維持して取り込む。
+    if (workspaceChanged) await refresh(false);
     const { changed, conflicts, missing } = await store.refresh(opened);
+    if (choosingProject || root !== workspaceRoot) return;
     if (conflicts.includes(active))
       notice('The file changed on disk. Your unsaved edits are preserved.', true);
     if (missing.length)
@@ -911,7 +1278,8 @@ async function poll(): Promise<void> {
         true,
       );
     if (changed || conflicts.length || missing.length) renderTabs();
-    if (changed) await refreshDiagnostics();
+    if (changed || workspaceChanged) await refreshDiagnostics();
+    if (workspaceChanged) await gitPanel.refreshSelection();
   } catch (error) {
     reportError(error);
   } finally {
@@ -924,7 +1292,10 @@ let linkedNavigation: Promise<void> = Promise.resolve();
 async function openTarget(target: FileTarget): Promise<void> {
   if (selectLinkedProject) return selectLinkedProject(target);
   if (workspaceRoot !== target.project) {
-    if (store.hasDirty() && !confirm('Discard unsaved changes and open the linked project?'))
+    if (
+      store.hasDirty() &&
+      !(await confirmDialog('Discard unsaved changes and open the linked project?'))
+    )
       return;
     await openProjectPicker(target);
     return;
@@ -945,12 +1316,33 @@ async function openTargetFile(target: FileTarget): Promise<void> {
   });
   editor.revealLineInCenter(start);
 }
-async function openProjectPicker(target?: FileTarget): Promise<void> {
+/**
+ * 現在のワークスペースを閉じて、別のプロジェクトへ移る。
+ * target か project があればそのプロジェクトを直接開き、どちらもなければ選択画面を出す。
+ */
+/**
+ * 前回開いていたファイルを開く。ツリーはルート直下しか取得していないので、一覧ではなくファイルの有無で決める。
+ * 開けば展開も追従する (reveal が未取得の階層を取りに行く)。
+ */
+async function restoreLastFile(): Promise<boolean> {
+  const previous = connection.embedded ? null : localStorage.getItem(`code-file:${workspaceRoot}`);
+  if (!previous) return false;
+  try {
+    await open(previous);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function openProjectPicker(target?: FileTarget, project?: string): Promise<void> {
   // リンク先のプロジェクトを開けることを確かめてから、現在のワークスペースで開いている文書とモデルを破棄する。
-  const linked = target ? await openProject(request, target.project) : undefined;
-  if (target && !linked) return;
+  const destination = target?.project ?? project;
+  const linked = destination ? await openProject(request, destination) : undefined;
+  if (destination && !linked) return;
   navigationGeneration++;
   choosingProject = true;
+  fileClipboard = undefined;
+  tree.setClipboard(false);
   const shell = requireElement<HTMLElement>('.workspace');
   shell.hidden = true;
   clearTimeout(checkingTimer);
@@ -968,6 +1360,7 @@ async function openProjectPicker(target?: FileTarget): Promise<void> {
   annotations.clear();
   splitEditor.clear();
   store.clear();
+  markerScopes.clear();
   opened.clear();
   imagePaths.clear();
   showImage(byId('image-view'));
@@ -996,41 +1389,30 @@ async function openProjectPicker(target?: FileTarget): Promise<void> {
         selectLinkedProject = undefined;
       };
     }));
+  // 既定の展開 (src) を決めてから取得する。取得後に展開を変えると、開いた表示なのに中身の無いフォルダになる。
+  tree.setProject(workspaceRoot.split('/').at(-1) || workspaceRoot, workspaceRoot);
   await syncAll();
   const workspace = await refresh();
   shell.hidden = false;
   choosingProject = false;
   editor.layout();
-  const previous = connection.embedded ? null : localStorage.getItem(`code-file:${workspaceRoot}`);
   if (target) await openTargetFile(target);
-  else if (fileNames.length)
+  else if (!(await restoreLastFile()) && fileNames.length)
     await open(
-      previous && fileNames.includes(previous)
-        ? previous
-        : (fileNames.find((file) => file === 'README.md') ??
-            fileNames.find(
-              (file) => isSource(file) && !file.includes('.gen.') && !file.endsWith('.d.ts'),
-            ) ??
-            fileNames[0]),
+      fileNames.find((file) => file === 'README.md') ??
+        fileNames.find(
+          (file) => isSource(file) && !file.includes('.gen.') && !file.endsWith('.d.ts'),
+        ) ??
+        fileNames[0],
     );
   if (workspace.unreadableDirectories.length)
     notice(
       `${workspace.unreadableDirectories.length} folders could not be read and were skipped.`,
       true,
     );
+  if (workspaceRevision === undefined)
+    notice('Restart the desktop app to enable automatic file and folder updates.', true);
 }
-byId('home').onclick = safely(async () => {
-  if (choosingProject) return;
-  if (store.hasDirty() && !confirm('Discard unsaved changes and return to projects?')) return;
-  choosingProject = true;
-  try {
-    if (workspaceRoot) await request({ op: 'sync', documents: [] });
-  } catch (error) {
-    choosingProject = false;
-    throw error;
-  }
-  await openProjectPicker();
-});
 
 async function start(): Promise<void> {
   requireElement<HTMLElement>('.workspace').hidden = true;
@@ -1055,10 +1437,11 @@ async function start(): Promise<void> {
   } catch (error) {
     reportError(error);
   }
-  await openProjectPicker(target ?? undefined);
+  // 初回の読み込みが失敗しても、選び直した後の自動更新は有効にしておく。
   setInterval(() => void poll(), pollInterval.disk);
   setInterval(() => {
     if (!choosingProject && !document.hidden) void refreshGit().catch(reportError);
   }, pollInterval.git);
+  await openProjectPicker(target ?? undefined);
 }
 void start().catch(reportError);

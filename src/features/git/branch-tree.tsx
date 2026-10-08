@@ -87,6 +87,7 @@ export function BranchTree({ refs, selected, onSelect }: Props) {
   return (
     <TreeView
       label="History branches"
+      activation="single"
       multiselect
       rows={rows}
       emptyMessage="No branches"

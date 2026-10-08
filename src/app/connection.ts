@@ -19,7 +19,10 @@ export class Connection {
   private token = '';
   private toolRoute?: string;
   private workspaceQueue: Promise<unknown> = Promise.resolve();
-  private terminalQueue: Promise<unknown> = Promise.resolve();
+  /** 長い外部アクセス (gh とリモートの fetch) の列。保存やポーリングの後ろに並ばない。 */
+  private remoteQueue: Promise<unknown> = Promise.resolve();
+  /** タブごとの入出力の列。別のタブの読み取り待ちが入力を遅らせない。id の無い操作は共通の列に並ぶ */
+  private readonly terminalQueues = new Map<string, Promise<unknown>>();
   constructor(getRoot: () => string) {
     this.getRoot = getRoot;
     if (this.embedded) return;
@@ -51,20 +54,40 @@ export class Connection {
   }
   /**
    * root は現在のプロジェクトで必ず上書きする。呼び出し側が root を書いても型では止まらないので、ここで揃える。
-   * ワークスペース操作とターミナル操作は別々の直列キューに並べる。
+   * 要求は種類ごとの直列キューに並べる。文書と Git の操作は 1 本の列で順序を保ち、ターミナルはタブごと、
+   * プルリクエストの取得は別の列にして、長い処理が無関係な操作を待たせない。
    */
   request: SendRequest = <Input extends ClientRequest>(input: Input) => {
     const scoped = { ...input, root: this.getRoot() };
-    const isTerminal = input.op.startsWith('terminal-');
-    const queue = isTerminal ? this.terminalQueue : this.workspaceQueue;
+    const key = this.queueKey(scoped);
+    const queue =
+      key === 'workspace'
+        ? this.workspaceQueue
+        : key === 'remote'
+          ? this.remoteQueue
+          : (this.terminalQueues.get(key) ?? Promise.resolve());
     // 応答はサーバーと同じ契約から作られる。同一プロセスか loopback の中だけを通るので、ここでは検証しない。
     const result = queue.then(() => this.send(scoped)) as Promise<ResponseOf<Input['op']>>;
-    if (isTerminal) this.terminalQueue = result.catch(() => undefined);
-    else this.workspaceQueue = result.catch(() => undefined);
+    const settled = result.catch(() => undefined);
+    if (key === 'workspace') this.workspaceQueue = settled;
+    else if (key === 'remote') this.remoteQueue = settled;
+    else {
+      this.terminalQueues.set(key, settled);
+      // 閉じたタブの列は、その close が終わった後に消す。
+      if (scoped.op === 'terminal-close')
+        void settled.then(() => {
+          if (this.terminalQueues.get(key) === settled) this.terminalQueues.delete(key);
+        });
+    }
     return result;
   };
+  private queueKey(input: ClientRequest): string {
+    if (input.op.startsWith('git-pr-')) return 'remote';
+    if (!input.op.startsWith('terminal-')) return 'workspace';
+    return 'id' in input ? `terminal:${input.id}` : 'terminal';
+  }
   async settle(): Promise<void> {
-    await Promise.all([this.workspaceQueue, this.terminalQueue]);
+    await Promise.all([this.workspaceQueue, this.remoteQueue, ...this.terminalQueues.values()]);
   }
   private async send(input: ClientRequest & { root: string }): Promise<unknown> {
     if (this.app) {

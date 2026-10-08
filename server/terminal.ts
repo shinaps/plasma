@@ -63,7 +63,8 @@ export class ShellTerminal {
     this.sessions.set(session.id, session);
     shell.onData((data) => {
       session.output += data;
-      if (session.output.length > limits.terminalScrollback) {
+      // 上限を 1 回分の読み取り量だけ超えてからまとめて削る。chunk ごとに 1 MB をコピーし直さない。
+      if (session.output.length > limits.terminalScrollback + limits.terminalReadChunk) {
         const trim = session.output.length - limits.terminalScrollback;
         session.output = session.output.slice(trim);
         session.offset += trim;

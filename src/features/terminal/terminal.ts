@@ -2,7 +2,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { errorMessage } from '../../../shared/errors.ts';
 import { limits } from '../../../shared/limits.ts';
-import type { ClientRequest, SendRequest, TerminalSession } from '../../../shared/protocol.ts';
+import type {
+  ClientRequest,
+  SendRequest,
+  TerminalOutput,
+  TerminalSession,
+} from '../../../shared/protocol.ts';
+import { buttonHtml, createButton } from '../../components/ui/button';
 import { requireElement } from '../../lib/dom';
 import { icon } from '../../lib/icons';
 import type { Report } from '../../lib/report';
@@ -20,9 +26,15 @@ type Tab = TerminalSession & {
   outputCursor: number;
   disposed: boolean;
   closing: boolean;
+  /** 出力を読めなくなった (サーバーの再起動など)。入力を受け付けず、閉じて開き直すよう示す */
+  disconnected: boolean;
   /** このタブへの入力とサイズ変更の送信順。並列に送るとシェルに届く順序が入れ替わるため */
   queue: Promise<void>;
 };
+
+/** 出力の取得に続けて失敗したとき、切断と判断するまでの回数と間隔。一時的な遅延は乗り越え、落ちたサーバーは待ち続けない。 */
+const pollRetries = 5;
+const pollRetryDelay = 1000;
 
 /** ターミナルのタブ。シェルのプロセスはサーバーが持ち、ここは表示と入出力の中継だけを行う。 */
 export class TerminalPanel {
@@ -42,8 +54,7 @@ export class TerminalPanel {
     this.panel.className =
       'terminal-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-panel bg-background shadow-panel';
     this.panel.hidden = true;
-    this.panel.innerHTML =
-      '<div class="flex h-12 shrink-0 items-center gap-1 bg-background p-2 text-caption"><div class="terminal-tabs flex h-full min-w-0 flex-1 gap-1.5 overflow-x-auto" role="tablist" aria-label="Terminal tabs"></div><button class="terminal-add grid size-8 shrink-0 place-items-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Add Terminal" title="New Terminal"></button><button class="terminal-hide grid size-8 shrink-0 place-items-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Hide Terminal" title="Hide without closing tabs"></button></div><div class="terminal-content min-h-0 flex-1"></div>';
+    this.panel.innerHTML = `<div class="flex h-12 shrink-0 items-center gap-1 bg-background p-2 text-caption"><div class="terminal-tabs flex h-full min-w-0 flex-1 gap-1.5 overflow-x-auto" role="tablist" aria-label="Terminal tabs"></div>${buttonHtml({ className: 'terminal-add grid size-8 shrink-0 place-items-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground', attributes: { 'aria-label': 'Add Terminal', title: 'New Terminal' } }, '')}${buttonHtml({ className: 'terminal-hide grid size-8 shrink-0 place-items-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground', attributes: { 'aria-label': 'Hide Terminal', title: 'Hide without closing tabs' } }, '')}</div><div class="terminal-content min-h-0 flex-1"></div>`;
     requireElement('.terminal-add', this.panel).append(icon('plus'));
     requireElement('.terminal-hide', this.panel).append(icon('minus'));
     this.dock = new ToolDock(
@@ -102,6 +113,7 @@ export class TerminalPanel {
     await this.show();
     const tab = this.active;
     if (!tab) throw new Error('Open a terminal tab first.');
+    if (!this.canWrite(tab)) throw new Error('This terminal has ended. Open a new terminal tab.');
     this.write(tab, this.pasteData(tab, text));
     await tab.queue;
     tab.terminal.focus();
@@ -132,17 +144,20 @@ export class TerminalPanel {
     const fit = new FitAddon();
     const body = document.createElement('div');
     const header = document.createElement('div');
-    const button = document.createElement('button');
-    const close = document.createElement('button');
+    const button = createButton({
+      className: 'h-full whitespace-nowrap rounded-tab px-3 text-caption',
+    });
+    const close = createButton({
+      className:
+        'mr-1 grid size-6 shrink-0 place-items-center rounded-control p-0 text-body text-muted-foreground hover:bg-surface-raised hover:text-foreground',
+    });
     // FitAddon measures this padded host so the final terminal row stays inside the inset.
     body.className = 'h-full px-3 pt-1 pb-3';
     body.id = `terminal-${session.id}`;
     body.role = 'tabpanel';
     header.className =
       'flex shrink-0 items-center rounded-tab hover:bg-accent [&.active]:bg-accent [&:not(.active)]:text-muted-foreground';
-    button.className = 'h-full whitespace-nowrap rounded-tab px-3 text-caption';
-    close.className =
-      'mr-1 grid size-6 shrink-0 place-items-center rounded-control p-0 text-body text-muted-foreground hover:bg-surface-raised hover:text-foreground';
+
     button.role = 'tab';
     button.id = `terminal-tab-${session.id}`;
     button.textContent = session.title;
@@ -170,6 +185,7 @@ export class TerminalPanel {
       outputCursor: 0,
       disposed: false,
       closing: false,
+      disconnected: false,
       queue: Promise.resolve(),
     };
     this.tabs.set(tab.id, tab);
@@ -192,10 +208,17 @@ export class TerminalPanel {
       this.sendInput(tab, { op: 'terminal-resize', id: tab.id, cols, rows }),
     );
     this.select(tab);
+    // 最初の大きさは変更イベント任せにしない。fit の結果が xterm の初期値と同じでも PTY は起動時の値のままになる。
+    this.sendInput(tab, {
+      op: 'terminal-resize',
+      id: tab.id,
+      cols: terminal.cols,
+      rows: terminal.rows,
+    });
     void this.poll(tab);
   }
   private canWrite(tab: Tab | undefined): tab is Tab {
-    return !!tab && !tab.disposed && !tab.closing && tab.exitCode === null;
+    return !!tab && !tab.disposed && !tab.closing && !tab.disconnected && tab.exitCode === null;
   }
   /** 入力は要求 1 回の上限 (limits.terminalWrite) で区切って順に送る。長い貼り付けも丸ごと届く。 */
   private write(tab: Tab, text: string): void {
@@ -266,31 +289,47 @@ export class TerminalPanel {
     tab.body.remove();
     tab.header.remove();
   }
+  /**
+   * 出力を取り続ける。読めなかった要求は数回やり直し、それでも読めなければ切断状態にして入力を止める。
+   * 出力が見えないまま打たせず、タブごとに 1 本のループだけを回す (再接続で二重に読まない)。
+   */
   private async poll(tab: Tab): Promise<void> {
-    try {
-      while (!tab.disposed) {
-        const result = await this.request({
-          op: 'terminal-read',
-          id: tab.id,
-          cursor: tab.outputCursor,
-        });
-        if (tab.disposed) return;
-        if (result.truncated) tab.terminal.write('\r\n[Earlier output omitted]\r\n');
-        if (result.data) tab.terminal.write(result.data);
-        tab.outputCursor = result.cursor;
-        tab.exitCode = result.exitCode;
-        if (result.exitCode !== null && !result.data) {
-          tab.button.textContent = `${tab.title} · Exited`;
-          tab.terminal.write(`\r\n[Shell exited: ${result.exitCode}]\r\n`);
-          break;
+    let failures = 0;
+    while (!tab.disposed) {
+      let result: TerminalOutput;
+      try {
+        result = await this.request({ op: 'terminal-read', id: tab.id, cursor: tab.outputCursor });
+      } catch (error) {
+        if (tab.disposed || tab.closing) return;
+        if (++failures < pollRetries) {
+          await new Promise((resolve) => setTimeout(resolve, pollRetryDelay));
+          continue;
         }
-        // 前面のタブは短い間隔で追従し、背面のタブは MCP の呼び出し回数を抑える。
-        await new Promise((resolve) =>
-          setTimeout(resolve, !this.panel.hidden && this.active === tab ? 100 : 500),
+        tab.disconnected = true;
+        tab.button.textContent = `${tab.title} · Disconnected`;
+        tab.terminal.write(
+          `\r\n[Terminal output unavailable: ${errorMessage(error)}. Close this tab and open a new one.]\r\n`,
         );
+        this.report(errorMessage(error), true);
+        return;
       }
-    } catch (error) {
-      if (!tab.disposed && !tab.closing) this.report(errorMessage(error), true);
+      failures = 0;
+      if (tab.disposed) return;
+      if (result.truncated) tab.terminal.write('\r\n[Earlier output omitted]\r\n');
+      if (result.data) tab.terminal.write(result.data);
+      tab.outputCursor = result.cursor;
+      tab.exitCode = result.exitCode;
+      if (result.exitCode !== null && !result.data) {
+        tab.button.textContent = `${tab.title} · Exited`;
+        tab.terminal.write(`\r\n[Shell exited: ${result.exitCode}]\r\n`);
+        return;
+      }
+      // 1 回分を読み切ったときは続きがある。待たずに取り、速い出力でも保持分を取りこぼさない。
+      if (result.data.length >= limits.terminalReadChunk) continue;
+      // 前面のタブは短い間隔で追従し、背面のタブは MCP の呼び出し回数を抑える。
+      await new Promise((resolve) =>
+        setTimeout(resolve, !this.panel.hidden && this.active === tab ? 100 : 500),
+      );
     }
   }
   /** 改行を空白にまとめ、制御文字を取り除く。貼り付けた参照がコマンドとして実行されないようにする。 */

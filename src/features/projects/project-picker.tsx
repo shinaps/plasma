@@ -1,8 +1,17 @@
-import { Folder } from 'lucide-react';
+import { Folder, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import plasmaMark from '../../../assets/plasma.svg?inline';
 import { errorMessage } from '../../../shared/errors.ts';
 import type { RecentProject, ResponseOf, SendRequest } from '../../../shared/protocol.ts';
+import { Alert } from '../../components/ui/alert';
+import { Button } from '../../components/ui/button';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '../../components/ui/context-menu';
+import { Input } from '../../components/ui/input';
 import { renderReact, unmountReact } from '../../lib/react-view';
 import { openProject } from './open-project';
 
@@ -22,9 +31,6 @@ function ProjectPicker({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [folders, setFolders] = useState<FolderList>();
-  const contextMenu = useRef<HTMLDivElement>(null);
-  // 右クリックしたプロジェクト。描画には使わないのでメニューの処理だけが参照する。
-  const contextProject = useRef<RecentProject>(undefined);
   const busyRef = useRef(false);
   const browseButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -69,9 +75,8 @@ function ProjectPicker({
       const result = await openProject(request, path);
       if (result) onOpen(result.root);
     });
-  const forgetProject = (): Promise<void> =>
+  const forgetProject = (project: RecentProject): Promise<void> =>
     run(async () => {
-      const project = contextProject.current;
       if (!project) return;
       const result = await request({ op: 'project-forget', path: project.root });
       setProjectList((previous) => ({ ...previous, recent: result.recent }));
@@ -88,19 +93,36 @@ function ProjectPicker({
         <h1 className="m-0 text-brand font-medium tracking-tight text-foreground">Plasma</h1>
       </header>
       <section className="[&_button]:rounded-control" aria-label="Open Project">
-        <button
+        <Button
+          variant="plain"
+          size="content"
           ref={browseButton}
           type="button"
-          className="flex w-full items-center gap-3 bg-inverse px-4 py-4 text-left text-body font-medium text-inverse-foreground hover:bg-inverse/90 [&_svg]:size-5"
+          className="flex w-full items-center gap-3 bg-inverse px-4 py-4 text-left justify-start text-body font-medium text-inverse-foreground hover:bg-inverse/90 [&_svg]:size-5"
           disabled={busy}
-          onClick={() => void browseFolder(input || folders?.root || projectList.home)}
+          onClick={() =>
+            void run(async () => {
+              const selected = await request({ op: 'project-pick' });
+              if (!selected.supported) {
+                const result = await request({
+                  op: 'project-browse',
+                  path: input || projectList.home,
+                });
+                setFolders(result);
+                setInput(result.root);
+              } else if (selected.path) {
+                const result = await openProject(request, selected.path);
+                if (result) onOpen(result.root);
+              }
+            })
+          }
         >
           <Folder />
           <span>Open Folder</span>
           <span className="ml-auto text-title opacity-60" aria-hidden="true">
             ↗
           </span>
-        </button>
+        </Button>
         <form
           className="mt-3 flex items-center gap-2 rounded-control bg-background p-1 ring-1 ring-border [&_button]:shrink-0 [&_button]:px-3 [&_button]:py-2"
           onSubmit={(event) => {
@@ -108,8 +130,8 @@ function ProjectPicker({
             void openFolder(input);
           }}
         >
-          <input
-            className="min-w-0 flex-1 rounded-control border-0 bg-transparent p-2.5 text-caption text-foreground placeholder:text-muted-foreground"
+          <Input
+            className="min-w-0 flex-1 rounded-control border-0 focus-visible:ring-0 bg-transparent p-2.5 text-caption text-foreground placeholder:text-muted-foreground"
             aria-label="Folder path"
             placeholder="Or enter a folder path"
             autoComplete="off"
@@ -117,112 +139,117 @@ function ProjectPicker({
             value={input}
             onChange={(event) => setInput(event.target.value)}
           />
-          <button disabled={busy} type="submit" title="Open Folder Path">
+          <Button
+            variant="plain"
+            size="content"
+            disabled={busy}
+            type="submit"
+            title="Open Folder Path"
+          >
             Open <span aria-hidden="true">↵</span>
-          </button>
+          </Button>
         </form>
       </section>
       {error && (
-        <p className="break-words text-caption leading-relaxed text-destructive" role="alert">
-          {error}
-        </p>
+        <Alert className="break-words text-caption leading-relaxed text-destructive">{error}</Alert>
       )}
       {folders && (
         <div className="mt-4 overflow-hidden rounded-panel bg-background ring-1 ring-border">
           <div className="flex flex-wrap items-center gap-2 p-2">
-            <button
+            <Button
+              variant="plain"
+              size="content"
               type="button"
               className="shrink-0 rounded-control p-2 hover:bg-accent"
               aria-label="Parent Folder"
-              title="Parent Folder"
+              tooltip="Parent Folder"
               disabled={busy}
               onClick={() => void browseFolder(folders.parent)}
             >
               ↑
-            </button>
+            </Button>
             <span
               className="min-w-0 flex-1 truncate text-caption text-muted-foreground"
               title={folders.root}
             >
               {folders.root}
             </span>
-            <button
+            <Button
+              variant="plain"
+              size="content"
               type="button"
               className="shrink-0 rounded-control p-2 text-caption hover:bg-accent"
               disabled={busy}
               onClick={() => void openFolder(folders.root)}
             >
               Open This Folder
-            </button>
+            </Button>
           </div>
-          <div className="grid max-h-60 overflow-auto p-1.5 [&_button]:rounded-control [&_button]:px-3 [&_button]:py-2 [&_button]:text-left [&_button:hover]:bg-accent">
+          <div className="grid max-h-60 overflow-auto p-1.5 [&_button]:rounded-control [&_button]:px-3 [&_button]:py-2 [&_button]:text-left [&_button]:justify-start [&_button:hover]:bg-accent">
             {folders.folders.map((folder) => (
-              <button
+              <Button
+                variant="plain"
+                size="content"
                 type="button"
                 key={folder.path}
                 disabled={busy}
                 onClick={() => void browseFolder(folder.path)}
               >
                 {folder.name}
-              </button>
+              </Button>
             ))}
             {!folders.folders.length && 'No subfolders'}
           </div>
         </div>
       )}
-      <div
-        ref={contextMenu}
-        popover="auto"
-        className="fixed m-0 rounded-control border-0 bg-popover p-1 text-caption text-popover-foreground shadow-popover"
-      >
-        <button
-          type="button"
-          className="rounded-control px-3 py-2 hover:bg-accent"
-          onClick={() => {
-            contextMenu.current?.hidePopover();
-            void forgetProject();
-          }}
-        >
-          Remove from Recent Projects
-        </button>
-      </div>
       {!!projectList.recent.length && (
         <section className="mt-9">
           <h2 className="mb-3 text-caption font-medium text-muted-foreground">Recent Projects</h2>
-          <div className="grid gap-1 [&_button]:flex [&_button]:w-full [&_button]:items-center [&_button]:gap-3.5 [&_button]:rounded-control [&_button]:p-3 [&_button]:text-left [&_button:hover]:bg-accent">
+          <div className="grid gap-1">
             {projectList.recent.map((project) => (
-              <button
-                type="button"
-                key={project.root}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  contextProject.current = project;
-                  const menu = contextMenu.current;
-                  if (!menu) return;
-                  menu.showPopover();
-                  menu.style.left = `${Math.max(8, Math.min(event.clientX, innerWidth - menu.offsetWidth - 8))}px`;
-                  menu.style.top = `${Math.max(8, Math.min(event.clientY, innerHeight - menu.offsetHeight - 8))}px`;
-                  menu.querySelector('button')?.focus();
-                }}
-                title={project.root}
-                disabled={busy}
-                onClick={() => void openFolder(project.root)}
-              >
-                <span className="grid size-9 shrink-0 place-items-center rounded-control bg-surface-raised text-foreground [&_svg]:size-4.5">
-                  <Folder />
-                </span>
-                <span className="grid min-w-0 gap-1 [&_strong]:truncate [&_strong]:text-body [&_strong]:font-medium [&_span]:truncate [&_span]:text-caption [&_span]:text-muted-foreground">
-                  <strong>{project.name}</strong>
-                  <span>
-                    {project.root.startsWith(`${projectList.home}/`)
-                      ? `~${project.root.slice(projectList.home.length)}`
-                      : project.root}
-                  </span>
-                </span>
-                <span className="ml-auto text-title opacity-60" aria-hidden="true">
-                  ↗
-                </span>
-              </button>
+              <ContextMenu key={project.root}>
+                <ContextMenuTrigger asChild>
+                  <div className="group relative rounded-control hover:bg-accent focus-within:bg-accent">
+                    <Button
+                      variant="plain"
+                      size="content"
+                      type="button"
+                      className="flex w-full items-center gap-3.5 rounded-control p-3 pr-12 text-left justify-start"
+                      title={project.root}
+                      disabled={busy}
+                      onClick={() => void openFolder(project.root)}
+                    >
+                      <span className="grid size-9 shrink-0 place-items-center rounded-control bg-surface-raised text-foreground [&_svg]:size-4.5">
+                        <Folder />
+                      </span>
+                      <span className="grid min-w-0 gap-1 [&_strong]:truncate [&_strong]:text-body [&_strong]:font-medium [&_span]:truncate [&_span]:text-caption [&_span]:text-muted-foreground">
+                        <strong>{project.name}</strong>
+                        <span>
+                          {project.root.startsWith(`${projectList.home}/`)
+                            ? `~${project.root.slice(projectList.home.length)}`
+                            : project.root}
+                        </span>
+                      </span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${project.name} from Recent Projects`}
+                      tooltip="Remove from Recent Projects"
+                      disabled={busy}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+                      onClick={() => void forgetProject(project)}
+                    >
+                      <X />
+                    </Button>
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem disabled={busy} onSelect={() => void forgetProject(project)}>
+                    Remove from Recent Projects
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
             ))}
           </div>
         </section>
@@ -242,6 +269,7 @@ export function chooseProject(
   host.className =
     'fixed inset-0 flex justify-center overflow-auto bg-surface px-7 py-12 text-body text-foreground';
   host.setAttribute('aria-label', 'Open Project');
+  host.dataset.projectPicker = '';
   document.body.append(host);
 
   return new Promise((resolve) => {

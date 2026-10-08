@@ -37,7 +37,6 @@ export async function setupHighlighting(): Promise<void> {
         type: 'dark',
         colors: {
           ...oneDark.colors,
-          ...theme.diffColors,
           'editor.background': theme.background,
           'editor.foreground': theme.foreground,
         },

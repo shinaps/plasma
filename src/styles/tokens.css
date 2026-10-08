@@ -50,13 +50,13 @@
   --color-git-graph-branch: rgb(153, 199, 133);
   --color-git-graph-merge: rgb(230, 176, 126);
   --color-git-graph-other: rgb(191, 148, 220);
-  /* 変更行は行全体を 1 回だけ着色する。構文の色の上にもう 1 枚重ねない。 */
-  --color-diff-added-line: #203529;
-  --color-diff-removed-line: #38252b;
-  --color-diff-added-text: #00000000;
-  --color-diff-removed-text: #00000000;
-  --color-diff-added-gutter: var(--color-diff-added-line);
-  --color-diff-removed-gutter: var(--color-diff-removed-line);
+  /* 差分の装飾は選択背景より上に重なる。半透明にして選択範囲を隠さず、行の背景は薄く、文字単位の強調はそれより濃くする。 */
+  --color-diff-added-line: #28812533;
+  --color-diff-removed-line: #a0312f33;
+  --color-diff-added-text: #4baf5040;
+  --color-diff-removed-text: #e06c7540;
+  --color-diff-changed-line: #569cd614;
+  --color-diff-changed-text: #569cd626;
 
   --ui-font-size: 16px;
   /* コードの文字サイズは UI の文字サイズとは別に決める。 */

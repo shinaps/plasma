@@ -80,7 +80,7 @@ function replaceText(model: monaco.editor.ITextModel, text: string): void {
 /** 開いている文書のモデルとディスクのリビジョンを持つ。画面遷移では文書の一覧もリビジョンも変わらない。 */
 export class DocumentStore {
   private readonly request: SendRequest;
-  private readonly onEdit: () => void;
+  private readonly onEdit: (path: string) => void;
   private readonly documentsByPath = new Map<string, EditorDocument>();
   private readonly loading = new Map<string, Promise<EditorDocument>>();
   private applyingDiskChange = false;
@@ -91,7 +91,7 @@ export class DocumentStore {
   /**
    * @param onEdit 利用者の編集で本文が変わったときに呼ぶ。ディスクの内容を取り込むときは呼ばない
    */
-  constructor(request: SendRequest, onEdit: () => void) {
+  constructor(request: SendRequest, onEdit: (path: string) => void) {
     this.request = request;
     this.onEdit = onEdit;
   }
@@ -108,10 +108,11 @@ export class DocumentStore {
   /** ディスクから読んでモデルを作り、一覧に登録して編集の監視を始める。 */
   private async createDocument(path: string): Promise<EditorDocument> {
     const file = await this.request({ op: 'read', path });
+    // パスは解釈させずにそのまま持つ。`#` `?` `%` を含む名前が別の URI になったり、他のファイルと重なったりしない。
     const model = monaco.editor.createModel(
       file.text,
       languageFor(path),
-      monaco.Uri.parse(`file:///workspace/${path}`),
+      monaco.Uri.from({ scheme: 'file', path: `/workspace/${path}` }),
     );
     const document: EditorDocument = {
       model,
@@ -122,7 +123,7 @@ export class DocumentStore {
     };
     this.documentsByPath.set(path, document);
     model.onDidChangeContent(() => {
-      if (!this.applyingDiskChange) this.onEdit();
+      if (!this.applyingDiskChange) this.onEdit(path);
     });
     return document;
   }
@@ -234,7 +235,14 @@ export class DocumentStore {
         version !== document.model.getVersionId()
       )
         continue;
-      if (result.revision === document.revision) continue;
+      if (result.revision === document.revision) {
+        // ディスクが読み込んだ版に戻れば競合ではない。編集はそのまま保存できる。
+        if (document.conflict) {
+          document.conflict = false;
+          changed = true;
+        }
+        continue;
+      }
       if (isDirty(document)) {
         if (!document.conflict) conflicts.push(path);
         document.conflict = true;

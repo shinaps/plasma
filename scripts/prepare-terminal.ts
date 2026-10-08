@@ -10,5 +10,10 @@ if (process.platform === 'darwin') {
     path.dirname(require.resolve('node-pty/package.json')),
     `prebuilds/darwin-${process.arch}/spawn-helper`,
   );
-  fs.chmodSync(helper, 0o755);
+  try {
+    fs.chmodSync(helper, 0o755);
+  } catch (error) {
+    // 配布物に prebuild が無い構成 (ソースからビルドした node-pty) では付け直す対象が無い。導入を止めない。
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
 }

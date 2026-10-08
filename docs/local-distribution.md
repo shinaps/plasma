@@ -4,7 +4,7 @@ This is a manually installed local-runtime preview, not an approved OpenAI direc
 
 ## Requirements
 
-- macOS, Node.js 24.3 or newer, npm, Git and the Codex CLI/desktop app with local plugin support.
+- macOS, Node.js 24.3 or newer, pnpm 11.19.0, Git and the Codex CLI/desktop app with local plugin support.
 - Internet access during dependency installation. The archive includes the built UI and runtime source, but not Node.js or node_modules.
 - Linux and Windows are not verified for this preview.
 
@@ -13,8 +13,8 @@ This is a manually installed local-runtime preview, not an approved OpenAI direc
 Keep the extracted folder in a permanent location. From inside that folder:
 
 ```sh
-npm ci --omit=dev
-npm run setup:plugin
+pnpm install --prod --frozen-lockfile
+pnpm run setup:plugin
 codex plugin marketplace add "$PWD/.shinaps/work/local-marketplace"
 codex plugin add typescript-workbench@workbench-local
 ```
@@ -23,7 +23,7 @@ Restart Codex, enable Plasma if needed, and open Plasma from the plugin or sideb
 
 The plugin retains the existing `typescript-workbench@workbench-local` identity. If that identity is already installed, do not install a second copy blindly: keep the previous folder, remove the old plugin/marketplace through Codex, then register this location. Restart and verify before deleting the previous folder. This preview does not perform automatic updates.
 
-For standalone browser access, run `npm start` and open the local URL printed by the server. Do not share that URL or its token.
+For standalone browser access, run `pnpm start` and open the local URL printed by the server. Do not share that URL or its token.
 
 ## Access and data
 

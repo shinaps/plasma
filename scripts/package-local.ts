@@ -20,7 +20,8 @@ for (const entry of [
   'dist/index.html',
   'scripts/prepare-local-plugin.ts',
   'scripts/prepare-terminal.ts',
-  'package-lock.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
 ]) {
   const target = path.join(stage, entry);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -57,13 +58,20 @@ for (const entry of [
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(path.join(root, entry), target);
 }
-// バンドルに含まれる依存関係のライセンスも残す。lock 全体を対象にして取りこぼしを避ける。
-const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+// pnpm の仮想ストアから推移的依存も収集し、バンドルに含まれるライセンスを残す。
+const manifests = fs.globSync(
+  [
+    'node_modules/.pnpm/*/node_modules/*/package.json',
+    'node_modules/.pnpm/*/node_modules/@*/*/package.json',
+  ],
+  { cwd: root },
+);
+const directories = [
+  ...new Set(manifests.map((manifest) => fs.realpathSync(path.dirname(path.join(root, manifest))))),
+].sort();
 const dependencies: string[] = [];
-for (const entry of Object.keys(lock.packages).sort()) {
-  if (!entry.startsWith('node_modules/')) continue;
-  const directory = path.join(root, entry);
-  if (!fs.existsSync(directory)) continue; // 他 OS 専用の optional dependency は同梱されない。
+for (const directory of directories) {
+  const entry = path.relative(root, directory);
   const metadata = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
   dependencies.push(`${metadata.name}@${metadata.version}: ${metadata.license ?? 'See package'}`);
   for (const file of fs.readdirSync(directory)) {

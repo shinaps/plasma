@@ -13,6 +13,19 @@ function scan(directory: string): void {
     }
     if (!/\.(tsx?|css)$/.test(file) || entry.name === 'tokens.css') continue;
     const text = fs.readFileSync(file, 'utf8');
+    // 共通Buttonを迂回すると、Preflightなしの環境でブラウザ既定の余白が再び混ざる。
+    if (
+      file !== path.join(source, 'components/ui/button.tsx') &&
+      /<button\b|createElement\(\s*['"]button['"]/.test(text)
+    )
+      failures.push(`${file}: use the shared Button or createButton`);
+    if (
+      !file.startsWith(path.join(source, 'components/ui/')) &&
+      /<(?:input|textarea|dialog|label)\b|createElement\(\s*['"](?:input|textarea|dialog)['"]|popover=|\.popover\s*=|\bconfirm\(/.test(
+        text,
+      )
+    )
+      failures.push(`${file}: use shared UI form, dialog, or menu components`);
     if (/(?:['"\s:]|\[)#[\da-f]{3,8}(?=[\s;'"\]},])/i.test(text))
       failures.push(`${file}: literal color`);
     if (/(?:text|rounded|shadow)-\[/.test(text))
